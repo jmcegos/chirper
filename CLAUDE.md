@@ -46,7 +46,8 @@ To add a dashboard action that the agent should also be able to perform: add a c
 - Credit card: the statement day is a ₱0 info row; cash leaves on the next due day. The current bill is `statement_balance`, or the projected spend if that is higher and the statement hasn't cut yet. Later bills use the next-month projected spend. Paying a statement zeroes it and remembers the amount for undo.
 - Received/Paid toggles take a `syncWallet` flag so a wallet the user synced by hand is never double counted.
 - Loans have a loan date, first due date and frequency (`monthly` or `every_15_days`); due dates are derived in `lib/domain/loans.ts`. `amountDueOn()` applies the flat on-time rebate (paid on or before the due date) or the flat late penalty (after it, no grace period); each payment stores `amount_paid` so undo refunds exactly that. Paid installments are rows in `loan_payments` (not a count). New loans treat installments due on or before today as paid unless listed as unpaid, and never move the wallet. Old databases are migrated on open by `migrate()` in `lib/db.ts`.
-- Start New Month Cycle clears income received and card paid flags and moves next-month absences into the current month. It does not touch loans.
+- Bills (`lib/domain/bills.ts`) are date-driven like loans: `bills` holds the schedule and estimate, `bill_occurrences` is sparse (only due dates with a billed amount or payment). Ledger kind `bill`.
+- Start New Month Cycle clears income received and card paid flags and moves next-month absences into the current month. It does not touch loans or bills.
 - Backup writes an online copy to `./backups/`.
 
 ## Config gotchas

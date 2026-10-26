@@ -10,6 +10,7 @@ const MAX_TOKENS = 16000;
 /** Hard stop for one user message: reads + writes rarely need more than a handful of rounds. */
 const MAX_ROUNDS = 12;
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
 
 const SYSTEM_PROMPT = `You are the user's personal cash-flow agent for their local Fin Tracker app. The user talks only to you; you keep the app's data current with your tools. They do not want to press buttons or type data into forms.
 
@@ -18,6 +19,7 @@ What the app tracks (Philippine pesos, Asia/Manila time):
 - Monthly incomes. Payroll cutoffs lose a fixed amount per absence day, only when absences are entered.
 - Installment loans with a loan date, due dates (monthly or every 15 days) and which installments are paid; unpaid past ones are overdue.
 - Credit cards: the statement day moves no cash; cash leaves on the due day.
+- Bills and planned expenses (monthly, every 15 days, yearly or one-time) with an estimated amount; record the actual amount with set_bill_amount when a bill arrives.
 - Pocket expenses that come straight out of the wallet.
 - A forward running-balance ledger that shows the balance after every future event and flags any shortfall.
 "This month" means the app's current cycle month, shown in the state.
@@ -94,9 +96,14 @@ export async function runAgentTurn(text: string, images: AgentImage[]): Promise<
       system: SYSTEM_PROMPT,
       tools: AGENT_TOOLS,
       messages,
+      // The day's thread is stored and replayed, so it can outlive a change to the
+      // system prompt or tools (an app update). Thinking blocks are bound to the
+      // prompt and tools they were made under: drop the stale ones instead of
+      // failing the whole request with a 400.
+      thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } },
       output_config: { effort: 'medium' },
       cache_control: { type: 'ephemeral' },
-      betas: [FALLBACK_BETA],
+      betas: [FALLBACK_BETA, THINKING_BINDING_BETA],
       fallbacks: 'default',
     });
 

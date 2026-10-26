@@ -72,6 +72,11 @@ export function daysBetween(from: IsoDate, to: IsoDate): number {
   return Math.round((toUtcMillis(to) - toUtcMillis(from)) / MS_PER_DAY);
 }
 
+/** Moves a date by whole months, keeping its day (clamped in short months: Jan 31 + 1 → Feb 28). */
+export function addMonthsKeepingDay(date: IsoDate, count: number): IsoDate {
+  return dateOf(addMonths(yearMonthOf(date), count), dayOf(date));
+}
+
 export function addDays(date: IsoDate, count: number): IsoDate {
   const shifted = new Date(toUtcMillis(date) + count * MS_PER_DAY);
   return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`;

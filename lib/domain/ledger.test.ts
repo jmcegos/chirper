@@ -62,6 +62,7 @@ function seedSnapshot(): FinanceSnapshot {
     incomes,
     debts,
     cards,
+    bills: [],
     expenses: [],
   };
 }
@@ -149,6 +150,35 @@ describe('dated loans', () => {
       ['2026-11-05', -4700, false, 'Dealer • includes ₱500.00 on-time rebate'],
       ['2026-12-05', -4700, false, 'Dealer • FINAL installment • includes ₱500.00 on-time rebate'],
     ]);
+  });
+});
+
+describe('bills', () => {
+  const meralco = {
+    id: 1, name: 'Meralco', frequency: 'monthly' as const, nextDueDate: '2026-09-20', estimatedAmount: 2350, notes: '',
+    records: [{ dueDate: '2026-09-20', actualAmount: 2100, paidAmount: 2100, paidAt: 1 }],
+  };
+
+  it('uses the billed amount when known and projects the rest at the estimate', () => {
+    const snapshot = { ...seedSnapshot(), bills: [{ ...meralco, records: [...meralco.records, { dueDate: '2026-10-20', actualAmount: 2812.4, paidAmount: null, paidAt: null }] }] };
+    const events = allEvents(buildLedger(snapshot, TODAY)).filter((event) => event.kind === 'bill');
+    expect(events.map((event) => [event.date, event.amount, event.overdue, event.detail])).toEqual([
+      ['2026-10-20', -2812.4, false, 'Billed'],
+      ['2026-11-20', -2350, false, 'Est. ₱2,350.00'],
+      ['2026-12-20', -2350, false, 'Est. ₱2,350.00'],
+    ]);
+  });
+
+  it('flags a bill whose due date has passed unpaid as overdue', () => {
+    const rent = { ...meralco, name: 'Rent', nextDueDate: '2026-10-05', estimatedAmount: 8000, records: [] };
+    const first = allEvents(buildLedger({ ...seedSnapshot(), bills: [rent] }, TODAY)).find((event) => event.kind === 'bill');
+    expect(first).toMatchObject({ date: TODAY, scheduledDate: '2026-10-05', overdue: true, amount: -8000 });
+  });
+
+  it('lists a bill paid in the cycle month as completed', () => {
+    const paidInOctober = { ...meralco, nextDueDate: '2026-10-01', records: [{ dueDate: '2026-10-01', actualAmount: null, paidAmount: 2350, paidAt: 1 }] };
+    const ledger = buildLedger({ ...seedSnapshot(), bills: [paidInOctober] }, TODAY);
+    expect(ledger.completed.find((item) => item.id.startsWith('bill'))).toMatchObject({ title: 'Meralco', amount: -2350, note: 'Paid ✓' });
   });
 });
 

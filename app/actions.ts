@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { revalidatePath } from 'next/cache';
 import { AgentUnavailableError, runAgentTurn } from '@/lib/agent/agent';
 import type { AgentImage } from '@/lib/agent/types';
-import type { LoanFrequency } from '@/lib/domain/types';
+import type { BillFrequency, LoanFrequency } from '@/lib/domain/types';
 import { roundPesos } from '@/lib/domain/money';
 import * as commands from '@/lib/commands';
 
@@ -76,6 +76,37 @@ export async function saveDebt(form: FormData): Promise<void> {
 
 export async function removeDebt(debtId: number): Promise<void> {
   commands.deleteLoan(debtId);
+  refresh();
+}
+
+/* ─────────────────────── bills & planned expenses ──────────────────── */
+
+export async function saveBill(form: FormData): Promise<void> {
+  const id = integer(form, 'id');
+  const input = {
+    name: text(form, 'name'),
+    frequency: text(form, 'frequency') as BillFrequency,
+    nextDueDate: text(form, 'nextDueDate'),
+    estimatedAmount: pesos(form, 'estimatedAmount'),
+    notes: text(form, 'notes'),
+  };
+  if (id > 0) commands.updateBill(id, input);
+  else commands.addBill(input);
+  refresh();
+}
+
+export async function removeBill(billId: number): Promise<void> {
+  commands.deleteBill(billId);
+  refresh();
+}
+
+export async function toggleBillPaid(billId: number, syncWallet: boolean): Promise<void> {
+  commands.toggleBillPaid(billId, syncWallet);
+  refresh();
+}
+
+export async function setBillAmount(billId: number, dueDate: string, form: FormData): Promise<void> {
+  commands.setBillAmount(billId, pesos(form, 'amount'), dueDate);
   refresh();
 }
 

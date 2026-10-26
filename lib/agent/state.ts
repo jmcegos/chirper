@@ -1,6 +1,7 @@
 import 'server-only';
 import { getSnapshot } from '@/lib/db';
 import { formatMonthLabel, yearMonthKey, type IsoDate } from '@/lib/domain/calendar';
+import { billFrequencyLabel, isBillDone, nextUnpaidOccurrence, overdueOccurrences, type BillOccurrence } from '@/lib/domain/bills';
 import { currentBill } from '@/lib/domain/creditCard';
 import { debtServiceByMonth, liberationMilestones, safeSpendUntilPayday } from '@/lib/domain/insights';
 import { allEvents, buildLedger } from '@/lib/domain/ledger';
@@ -12,6 +13,10 @@ const RECENT_EXPENSES = 15;
 
 function withAmountDue(debt: DebtSchedule, installment: Installment | null, today: IsoDate) {
   return installment && { number: installment.number, date: installment.date, amountDue: amountDueOn(debt, installment, today) };
+}
+
+function billOccurrenceView(occurrence: BillOccurrence | null) {
+  return occurrence && { dueDate: occurrence.dueDate, amount: occurrence.amount, isEstimate: occurrence.isEstimate };
 }
 
 /** Everything the agent needs to reason about the user's money, with ids for its tools. */
@@ -54,6 +59,17 @@ export function financialState(today: IsoDate) {
       nextInstallment: withAmountDue(debt, nextUnpaid(debt), today),
       finalPaymentDate: payoffOf(debt)?.finalPaymentDate ?? null,
       notes: debt.notes,
+    })),
+    bills: snapshot.bills.map((bill) => ({
+      id: bill.id,
+      name: bill.name,
+      frequency: bill.frequency,
+      schedule: billFrequencyLabel(bill),
+      estimatedAmount: bill.estimatedAmount,
+      nextDue: billOccurrenceView(nextUnpaidOccurrence(bill)),
+      overdue: overdueOccurrences(bill, today).map(({ dueDate, amount }) => ({ dueDate, amount })),
+      done: isBillDone(bill),
+      notes: bill.notes,
     })),
     creditCards: cards.map((card) => ({
       id: card.id,

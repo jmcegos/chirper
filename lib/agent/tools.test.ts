@@ -144,6 +144,57 @@ describe('agent tools against a seeded database', () => {
   });
 });
 
+describe('bills and planned expenses', () => {
+  type BillState = { id: number; name: string; nextDue: unknown; overdue: unknown[]; done: boolean };
+  const billNamed = (name: string): BillState => JSON.parse(run('get_financial_state').content).bills.find((bill: BillState) => bill.name === name);
+
+  it('adds a monthly bill and flags a past due date as overdue', () => {
+    const result = run('add_bill', { name: 'Rent', frequency: 'monthly', next_due_date: '2026-10-05', estimated_amount: 8000 });
+    expect(result).toEqual({ content: 'Added bill #1 Rent (₱8,000.00, Monthly · 5th, next due Oct 5, 2026)', isError: false });
+    expect(billNamed('Rent')).toMatchObject({
+      nextDue: { dueDate: '2026-10-05', amount: 8000, isEstimate: true },
+      overdue: [{ dueDate: '2026-10-05', amount: 8000 }],
+      done: false,
+    });
+  });
+
+  it('replaces the estimate with the billed amount for the next unpaid due date', () => {
+    run('add_bill', { name: 'Meralco', frequency: 'monthly', next_due_date: '2026-10-20', estimated_amount: 2350 });
+    expect(run('set_bill_amount', { bill_id: 2, amount: 2812.4 }).isError).toBe(false);
+    expect(billNamed('Meralco').nextDue).toEqual({ dueDate: '2026-10-20', amount: 2812.4, isEstimate: false });
+  });
+
+  it('pays the oldest unpaid due date and undoes it, moving the wallet both ways', () => {
+    const before = wallet();
+    expect(run('set_bill_paid', { bill_id: 2, paid: true, sync_wallet: true }).content).toContain('₱2,812.40');
+    expect(wallet()).toBeCloseTo(before - 2812.4, 2);
+    expect(billNamed('Meralco').nextDue).toEqual({ dueDate: '2026-11-20', amount: 2350, isEstimate: true });
+    run('set_bill_paid', { bill_id: 2, paid: false, sync_wallet: true });
+    expect(wallet()).toBeCloseTo(before, 2);
+    expect(billNamed('Meralco').nextDue).toMatchObject({ dueDate: '2026-10-20', amount: 2812.4 });
+  });
+
+  it('finishes a one-time expense once paid', () => {
+    run('add_bill', { name: 'Aircon repair', frequency: 'one_time', next_due_date: '2026-11-12', estimated_amount: 1500 });
+    run('set_bill_paid', { bill_id: 3, paid: true, sync_wallet: false });
+    expect(billNamed('Aircon repair')).toMatchObject({ nextDue: null, done: true });
+    expect(run('set_bill_paid', { bill_id: 3, paid: true, sync_wallet: false }).content).toBe('Aircon repair is already paid');
+  });
+
+  it('rejects amounts for dates that are not on the bill schedule, and bad frequencies', () => {
+    expect(run('set_bill_amount', { bill_id: 2, amount: 100, due_date: '2026-10-21' })).toEqual({
+      content: '2026-10-21 is not a due date of Meralco.',
+      isError: true,
+    });
+    expect(run('add_bill', { name: 'X', frequency: 'weekly', next_due_date: '2026-11-01', estimated_amount: 1 }).isError).toBe(true);
+  });
+
+  it('deletes a bill', () => {
+    expect(run('delete_bill', { bill_id: 3 })).toEqual({ content: 'Deleted bill Aircon repair', isError: false });
+    expect(billNamed('Aircon repair')).toBeUndefined();
+  });
+});
+
 describe('transcript view', () => {
   it('folds the raw API thread into chat bubbles with change chips', async () => {
     const { todaysTranscript } = await import('./transcript');

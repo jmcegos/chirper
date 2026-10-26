@@ -2,7 +2,8 @@ import 'server-only';
 import type Anthropic from '@anthropic-ai/sdk';
 import * as commands from '@/lib/commands';
 import type { IsoDate } from '@/lib/domain/calendar';
-import type { LoanFrequency } from '@/lib/domain/types';
+import { BILL_FREQUENCIES } from '@/lib/domain/bills';
+import type { BillFrequency, LoanFrequency } from '@/lib/domain/types';
 import { financialState } from './state';
 
 type Schema = Anthropic.Beta.BetaTool['input_schema'];
@@ -44,6 +45,14 @@ class ToolInput {
     return value as number[];
   }
 
+  billFrequency(key: string): BillFrequency {
+    const value = this.string(key);
+    if (!(BILL_FREQUENCIES as readonly string[]).includes(value)) {
+      throw new commands.CommandError(`"${key}" must be one of: ${BILL_FREQUENCIES.join(', ')}.`);
+    }
+    return value as BillFrequency;
+  }
+
   period(key: string): 'current' | 'next' {
     const value = this.string(key);
     if (value !== 'current' && value !== 'next') throw new commands.CommandError(`"${key}" must be "current" or "next".`);
@@ -70,6 +79,7 @@ const id = (description: string) => ({ type: 'integer', description });
 const pesos = (description: string) => ({ type: 'number', description: `${description} (pesos)` });
 const isoDate = (description: string) => ({ type: 'string', description: `${description} (YYYY-MM-DD)` });
 const frequency = { type: 'string', enum: ['monthly', 'every_15_days'], description: 'How often an installment is due, counted from first_due_date' };
+const billFrequency = { type: 'string', enum: [...BILL_FREQUENCIES], description: 'How often the bill repeats; one_time for a single planned expense' };
 const rebate = pesos('On-time rebate taken off an installment paid on or before its due date, e.g. motor loans. 0 if none');
 const penalty = pesos('Late penalty added once to an installment paid after its due date. 0 if none');
 const unpaidPast = {
@@ -267,6 +277,75 @@ const TOOLS: AgentTool[] = [
     'Permanently delete a loan. Only after the user explicitly confirms.',
     schema({ loan_id: id('Loan id') }),
     (input) => commands.deleteLoan(input.number('loan_id')),
+  ),
+  tool(
+    'add_bill',
+    'Add a bill (rent, electricity, internet, subscription) or a planned one-off expense. It becomes an outflow on each due date in the runway.',
+    schema(
+      {
+        name: { type: 'string' },
+        frequency: billFrequency,
+        next_due_date: isoDate('The next due date to track (earlier ones are ignored)'),
+        estimated_amount: pesos('Usual or expected amount, used until the actual bill is known'),
+        notes: { type: 'string' },
+      },
+      ['name', 'frequency', 'next_due_date', 'estimated_amount'],
+    ),
+    (input) =>
+      commands.addBill({
+        name: input.string('name'),
+        frequency: input.billFrequency('frequency'),
+        nextDueDate: input.string('next_due_date'),
+        estimatedAmount: input.number('estimated_amount'),
+        notes: (input.present({ notes: 'string' }).notes as string | undefined) ?? '',
+      }),
+  ),
+  tool(
+    'update_bill',
+    'Change fields of an existing bill. Send only the fields that change.',
+    schema(
+      {
+        bill_id: id('Bill id'),
+        name: { type: 'string' },
+        frequency: billFrequency,
+        next_due_date: isoDate('The next due date to track'),
+        estimated_amount: pesos('Usual or expected amount'),
+        notes: { type: 'string' },
+      },
+      ['bill_id'],
+    ),
+    (input) => {
+      const fields = input.present({ name: 'string', next_due_date: 'string', estimated_amount: 'number', notes: 'string' });
+      return commands.updateBill(input.number('bill_id'), {
+        name: fields.name as string | undefined,
+        frequency: input.present({ frequency: 'string' }).frequency === undefined ? undefined : input.billFrequency('frequency'),
+        nextDueDate: fields.next_due_date as string | undefined,
+        estimatedAmount: fields.estimated_amount as number | undefined,
+        notes: fields.notes as string | undefined,
+      });
+    },
+  ),
+  tool(
+    'delete_bill',
+    'Permanently delete a bill. Only after the user explicitly confirms.',
+    schema({ bill_id: id('Bill id') }),
+    (input) => commands.deleteBill(input.number('bill_id')),
+  ),
+  tool(
+    'set_bill_amount',
+    "Record the actual billed amount when a bill arrives (e.g. this month's electricity). Applies to the oldest unpaid due date unless due_date is given.",
+    schema(
+      { bill_id: id('Bill id'), amount: pesos('Actual billed amount'), due_date: isoDate('Which due date this amount is for (optional)') },
+      ['bill_id', 'amount'],
+    ),
+    (input) =>
+      commands.setBillAmount(input.number('bill_id'), input.number('amount'), input.present({ due_date: 'string' }).due_date as string | undefined),
+  ),
+  tool(
+    'set_bill_paid',
+    "paid=true pays the bill's oldest unpaid due date (overdue first) at its billed amount or estimate. paid=false undoes the most recent payment.",
+    schema({ bill_id: id('Bill id'), paid: { type: 'boolean' }, sync_wallet: syncWallet }),
+    (input) => commands.setBillPaid(input.number('bill_id'), input.boolean('paid'), input.boolean('sync_wallet')),
   ),
   tool(
     'update_credit_card',
