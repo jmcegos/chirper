@@ -15,7 +15,7 @@ import { getSnapshot } from '@/lib/db';
 import { addMonths, formatLongDate, formatMonthLabel, formatMonthShort, formatShortDate, todayLocal, yearMonthKey } from '@/lib/domain/calendar';
 import { upcomingBills } from '@/lib/domain/creditCard';
 import { debtServiceByMonth, liberationMilestones, lowestBalanceFrom, nextInflow, nextOutflow, safeSpendUntilPayday } from '@/lib/domain/insights';
-import { activeLoanCount, buildLedger, type Ledger } from '@/lib/domain/ledger';
+import { activeLoanCount, buildLedger, clearedLoanCount, type Ledger } from '@/lib/domain/ledger';
 import { roundPesos } from '@/lib/domain/money';
 import type { CreditCard } from '@/lib/domain/types';
 
@@ -38,8 +38,7 @@ export default function DashboardPage() {
   const ledger = buildLedger(snapshot, todayLocal());
   const cycle = settings.cycleMonth;
   const safeSpend = safeSpendUntilPayday(ledger);
-  const paidLoans = debts.filter((debt) => debt.paidThisMonth).length;
-  const completedTitle = `Already Paid in ${formatMonthLabel(cycle).split(' ')[0]} (${paidLoans}/${activeLoanCount(debts)} Loans Cleared ✓)`;
+  const completedTitle = `Already Paid in ${formatMonthLabel(cycle).split(' ')[0]} (${clearedLoanCount(debts, cycle)}/${activeLoanCount(debts, cycle)} Loans Cleared ✓)`;
 
   return (
     <>
@@ -62,14 +61,14 @@ export default function DashboardPage() {
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <WalletCard walletName={settings.walletName} balance={settings.walletBalance} safeSpend={safeSpend} />
           <FlowCard inflow={nextInflow(ledger)} outflow={nextOutflow(ledger)} start={ledger.startDate} />
-          <DebtServiceCard service={debtServiceByMonth(ledger)} milestones={liberationMilestones(debts, cycle)} />
+          <DebtServiceCard service={debtServiceByMonth(ledger)} milestones={liberationMilestones(debts)} />
           <CycleControlsCard cycleLabel={settings.currentMonthLabel} nextCycleLabel={formatMonthLabel(addMonths(cycle, 1))} />
         </section>
 
         <div className="grid gap-6 lg:grid-cols-12">
           <div className="space-y-6 lg:col-span-7">
             <IncomePanel incomes={incomes} cycle={cycle} />
-            <LoanPanel debts={debts} cycle={cycle} />
+            <LoanPanel debts={debts} cycle={cycle} today={todayLocal()} />
             <CreditCardPanel insights={cards.map((card) => cardInsight(card, ledger))} />
             <QuickExpensePanel
               expenses={expenses}

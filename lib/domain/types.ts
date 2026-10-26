@@ -13,15 +13,26 @@ export interface IncomeRule {
   receivedThisMonth: boolean;
 }
 
+export type LoanFrequency = 'monthly' | 'every_15_days';
+
 export interface DebtSchedule {
   id: number;
   name: string;
   lender: string;
-  dueDay: number;
-  monthlyAmount: number;
+  loanDate: IsoDate;
+  /** Due date of installment #1; later ones follow `frequency`. */
+  firstDueDate: IsoDate;
+  frequency: LoanFrequency;
+  installmentAmount: number;
   totalInstallments: number;
-  paidInstallments: number;
-  paidThisMonth: boolean;
+  /** Installment numbers already paid, ascending. */
+  paidInstallmentNumbers: number[];
+  /** Taken off an installment paid on or before its due date. */
+  rebateAmount: number;
+  /** Added once to an installment paid after its due date. */
+  penaltyAmount: number;
+  /** The most recent payment; `amountPaid` is null when it was assumed paid on entry. */
+  lastPayment: { number: number; amountPaid: number | null } | null;
   notes: string;
 }
 

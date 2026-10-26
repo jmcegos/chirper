@@ -10,7 +10,7 @@ import { useDictation } from './useDictation';
 const OPEN_KEY = 'agent-dock-open';
 const MAX_IMAGES = 4;
 
-const EXAMPLES = ['Got my 25th payroll. MariBank now 14,599.65', 'Paid GLoan today', 'Spent 250 on lunch', 'Can I afford a 3,000 purchase this week?'];
+const EXAMPLES = ['My wallet balance is 5,000', 'Add my payroll: 15,000 every 10th and 25th', 'Add a loan: 2,977 monthly, due on the 20th, 12 months', 'Spent 250 on lunch'];
 
 /** Remembered choice; without one, open on desktop and minimized on phones. */
 function readOpenPreference(): boolean {
@@ -256,7 +256,7 @@ export function AgentDock({ turns, configured }: { turns: AgentTurnView[]; confi
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               rows={1}
-              placeholder={dictation.listening ? 'Listening…' : 'e.g. "Paid Atome in full, wallet is 4,020.05"'}
+              placeholder={dictation.listening ? 'Listening…' : 'e.g. "Got paid today, wallet is now 14,599.65"'}
               className="max-h-32 min-h-[36px] flex-1 resize-none bg-transparent px-1 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none"
             />
             {dictation.supported && (

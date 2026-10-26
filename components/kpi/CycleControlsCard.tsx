@@ -64,14 +64,14 @@ export function CycleControlsCard({ cycleLabel, nextCycleLabel }: { cycleLabel: 
           disabled={isPending}
           className="btn-danger justify-start"
           onClick={() =>
-            run('seed', 'Wipe all data and restore the Oct 17, 2026 seed?', async () => {
+            run('seed', 'Wipe all data and start over with an empty ₱0 wallet?', async () => {
               await resetToSeed();
-              return 'Restored Oct 17 seed.';
+              return 'All data cleared.';
             })
           }
         >
           {spinner('seed') ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-          Reset to Oct 17 Seed
+          Clear All Data
         </button>
       </div>
       {message && <p className="mt-2 break-all text-[11px] text-slate-400">{message}</p>}

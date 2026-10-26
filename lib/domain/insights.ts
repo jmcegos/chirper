@@ -1,6 +1,6 @@
 import { addMonths, daysBetween, yearMonthKey, type IsoDate, type YearMonth } from './calendar';
 import { allEvents, type Ledger, type LedgerEvent } from './ledger';
-import { payoffsByDate, type LoanPayoff } from './loans';
+import { onTimeAmount, payoffsByDate, type LoanPayoff } from './loans';
 import { roundPesos, toCentavos, toPesos } from './money';
 import type { DebtSchedule } from './types';
 
@@ -62,9 +62,9 @@ export interface LiberationMilestone {
 }
 
 /** Loans grouped by the month they finish, earliest first. */
-export function liberationMilestones(debts: DebtSchedule[], cycle: YearMonth): LiberationMilestone[] {
+export function liberationMilestones(debts: DebtSchedule[]): LiberationMilestone[] {
   const groups = new Map<string, LoanPayoff[]>();
-  for (const payoff of payoffsByDate(debts, cycle)) {
+  for (const payoff of payoffsByDate(debts)) {
     const key = yearMonthKey(payoff.freedFromMonth);
     groups.set(key, [...(groups.get(key) ?? []), payoff]);
   }
@@ -75,7 +75,7 @@ export function liberationMilestones(debts: DebtSchedule[], cycle: YearMonth): L
       freedFromMonth: last.freedFromMonth,
       installmentsLeft: Math.max(...payoffs.map((payoff) => payoff.installmentsLeft)),
       loans: payoffs.map((payoff) => payoff.debt),
-      freedMonthly: roundPesos(payoffs.reduce((sum, payoff) => sum + payoff.debt.monthlyAmount, 0)),
+      freedMonthly: roundPesos(payoffs.reduce((sum, payoff) => sum + onTimeAmount(payoff.debt), 0)),
     };
   });
 }

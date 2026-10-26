@@ -2,6 +2,7 @@ import 'server-only';
 import type Anthropic from '@anthropic-ai/sdk';
 import * as commands from '@/lib/commands';
 import type { IsoDate } from '@/lib/domain/calendar';
+import type { LoanFrequency } from '@/lib/domain/types';
 import { financialState } from './state';
 
 type Schema = Anthropic.Beta.BetaTool['input_schema'];
@@ -29,6 +30,20 @@ class ToolInput {
     return value;
   }
 
+  frequency(key: string): LoanFrequency {
+    const value = this.string(key);
+    if (value !== 'monthly' && value !== 'every_15_days') throw new commands.CommandError(`"${key}" must be "monthly" or "every_15_days".`);
+    return value;
+  }
+
+  /** An optional list of integers; undefined when the model left it out. */
+  integers(key: string): number[] | undefined {
+    const value = this.input[key];
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value) || !value.every((item) => Number.isInteger(item))) throw new commands.CommandError(`"${key}" must be a list of whole numbers.`);
+    return value as number[];
+  }
+
   period(key: string): 'current' | 'next' {
     const value = this.string(key);
     if (value !== 'current' && value !== 'next') throw new commands.CommandError(`"${key}" must be "current" or "next".`);
@@ -53,6 +68,16 @@ interface AgentTool {
 
 const id = (description: string) => ({ type: 'integer', description });
 const pesos = (description: string) => ({ type: 'number', description: `${description} (pesos)` });
+const isoDate = (description: string) => ({ type: 'string', description: `${description} (YYYY-MM-DD)` });
+const frequency = { type: 'string', enum: ['monthly', 'every_15_days'], description: 'How often an installment is due, counted from first_due_date' };
+const rebate = pesos('On-time rebate taken off an installment paid on or before its due date, e.g. motor loans. 0 if none');
+const penalty = pesos('Late penalty added once to an installment paid after its due date. 0 if none');
+const unpaidPast = {
+  type: 'array',
+  items: { type: 'integer' },
+  description:
+    'Installment numbers whose due date has passed but the user has NOT paid. Every other past installment counts as paid. Omit when all past ones are paid.',
+};
 const syncWallet = {
   type: 'boolean',
   description:
@@ -152,45 +177,60 @@ const TOOLS: AgentTool[] = [
   ),
   tool(
     'set_loan_paid',
-    "Mark a loan's installment for the current cycle month as paid (increments installments paid) or undo it.",
+    "paid=true pays the loan's oldest unpaid installment (overdue ones first). paid=false undoes the most recent payment.",
     schema({ loan_id: id('Loan id'), paid: { type: 'boolean' }, sync_wallet: syncWallet }),
     (input) => commands.setLoanPaid(input.number('loan_id'), input.boolean('paid'), input.boolean('sync_wallet')),
   ),
   tool(
     'add_loan',
-    'Add a new installment loan.',
-    schema({
-      name: { type: 'string' },
-      lender: { type: 'string' },
-      due_day: { type: 'integer', description: 'Day of month the installment is due' },
-      monthly_amount: pesos('Installment amount'),
-      total_installments: { type: 'integer' },
-      paid_installments: { type: 'integer', description: 'Installments already paid' },
-      notes: { type: 'string' },
-    }),
+    'Add a new installment loan. Installments due on or before today count as paid unless listed in unpaid_past_installments. Never moves the wallet.',
+    schema(
+      {
+        name: { type: 'string' },
+        lender: { type: 'string' },
+        loan_date: isoDate('When the loan was taken'),
+        first_due_date: isoDate('Due date of installment #1'),
+        frequency,
+        installment_amount: pesos('Amount per installment'),
+        rebate_amount: rebate,
+        penalty_amount: penalty,
+        total_installments: { type: 'integer' },
+        unpaid_past_installments: unpaidPast,
+        notes: { type: 'string' },
+      },
+      ['name', 'loan_date', 'first_due_date', 'frequency', 'installment_amount', 'total_installments'],
+    ),
     (input) =>
       commands.addLoan({
         name: input.string('name'),
-        lender: input.string('lender'),
-        dueDay: input.number('due_day'),
-        monthlyAmount: input.number('monthly_amount'),
+        lender: (input.present({ lender: 'string' }).lender as string | undefined) ?? '',
+        loanDate: input.string('loan_date'),
+        firstDueDate: input.string('first_due_date'),
+        frequency: input.frequency('frequency'),
+        installmentAmount: input.number('installment_amount'),
+        rebateAmount: (input.present({ rebate_amount: 'number' }).rebate_amount as number | undefined) ?? 0,
+        penaltyAmount: (input.present({ penalty_amount: 'number' }).penalty_amount as number | undefined) ?? 0,
         totalInstallments: input.number('total_installments'),
-        paidInstallments: input.number('paid_installments'),
-        notes: input.string('notes'),
+        unpaidPastInstallments: input.integers('unpaid_past_installments'),
+        notes: (input.present({ notes: 'string' }).notes as string | undefined) ?? '',
       }),
   ),
   tool(
     'update_loan',
-    'Change fields of an existing loan. Send only the fields that change.',
+    'Change fields of an existing loan. Send only the fields that change. Sending unpaid_past_installments sets exactly which past installments are unpaid.',
     schema(
       {
         loan_id: id('Loan id'),
         name: { type: 'string' },
         lender: { type: 'string' },
-        due_day: { type: 'integer' },
-        monthly_amount: pesos('Installment amount'),
+        loan_date: isoDate('When the loan was taken'),
+        first_due_date: isoDate('Due date of installment #1'),
+        frequency,
+        installment_amount: pesos('Amount per installment'),
+        rebate_amount: rebate,
+        penalty_amount: penalty,
         total_installments: { type: 'integer' },
-        paid_installments: { type: 'integer' },
+        unpaid_past_installments: unpaidPast,
         notes: { type: 'string' },
       },
       ['loan_id'],
@@ -199,19 +239,25 @@ const TOOLS: AgentTool[] = [
       const fields = input.present({
         name: 'string',
         lender: 'string',
-        due_day: 'number',
-        monthly_amount: 'number',
+        loan_date: 'string',
+        first_due_date: 'string',
+        installment_amount: 'number',
         total_installments: 'number',
-        paid_installments: 'number',
+        rebate_amount: 'number',
+        penalty_amount: 'number',
         notes: 'string',
       });
       return commands.updateLoan(input.number('loan_id'), {
         name: fields.name as string | undefined,
         lender: fields.lender as string | undefined,
-        dueDay: fields.due_day as number | undefined,
-        monthlyAmount: fields.monthly_amount as number | undefined,
+        loanDate: fields.loan_date as string | undefined,
+        firstDueDate: fields.first_due_date as string | undefined,
+        frequency: input.present({ frequency: 'string' }).frequency === undefined ? undefined : input.frequency('frequency'),
+        installmentAmount: fields.installment_amount as number | undefined,
+        rebateAmount: fields.rebate_amount as number | undefined,
+        penaltyAmount: fields.penalty_amount as number | undefined,
         totalInstallments: fields.total_installments as number | undefined,
-        paidInstallments: fields.paid_installments as number | undefined,
+        unpaidPastInstallments: input.integers('unpaid_past_installments'),
         notes: fields.notes as string | undefined,
       });
     },

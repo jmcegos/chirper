@@ -4,6 +4,7 @@ import {
   firstDayOf,
   formatMonthLabel,
   formatShortDate,
+  isSameYearMonth,
   ordinal,
   lastDayOf,
   maxDate,
@@ -13,7 +14,7 @@ import {
   type YearMonth,
 } from './calendar';
 import { upcomingBills } from './creditCard';
-import { remainingInstallments, scheduledInstallments } from './loans';
+import { amountDueOn, installments, isSettledThrough, remainingInstallments, type Installment } from './loans';
 import { formatPeso, toCentavos, toPesos } from './money';
 import { absenceDeduction, netPay } from './payroll';
 import type { CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule } from './types';
@@ -96,26 +97,46 @@ function incomeDrafts(rule: IncomeRule, cycle: YearMonth, completed: CompletedIt
   return drafts;
 }
 
-function debtDrafts(debt: DebtSchedule, cycle: YearMonth, completed: CompletedItem[]): DraftEvent[] {
-  if (debt.paidThisMonth) {
-    const nothingPaidYet = debt.paidInstallments === 0;
-    completed.push({
-      id: `debt-${debt.id}-done`,
-      date: dateOf(cycle, debt.dueDay),
-      title: debt.name,
-      amount: nothingPaidYet ? 0 : -debt.monthlyAmount,
-      note: nothingPaidYet ? 'No installment due this month' : `${debt.paidInstallments}/${debt.totalInstallments} Paid ✓`,
+/**
+ * Paid installments due in the cycle month are reported as completed. Every
+ * unpaid one up to `end` becomes an event; one due before the ledger start
+ * (any earlier month) is rolled onto the start date as overdue by `buildLedger`.
+ */
+function debtDetail(debt: DebtSchedule, installment: Installment, start: IsoDate): string {
+  const parts = [debt.lender, installment.number === debt.totalInstallments ? 'FINAL installment' : ''];
+  if (installment.date < start && debt.penaltyAmount > 0) parts.push(`includes ${formatPeso(debt.penaltyAmount)} late penalty, rebate lost`);
+  else if (installment.date >= start && debt.rebateAmount > 0) parts.push(`includes ${formatPeso(debt.rebateAmount)} on-time rebate`);
+  return parts.filter(Boolean).join(' • ');
+}
+
+function debtDrafts(debt: DebtSchedule, cycle: YearMonth, start: IsoDate, end: IsoDate, completed: CompletedItem[]): DraftEvent[] {
+  const drafts: DraftEvent[] = [];
+  for (const installment of installments(debt)) {
+    if (installment.paid) {
+      if (isSameYearMonth(yearMonthOf(installment.date), cycle)) {
+        completed.push({
+          id: `debt-${debt.id}-${installment.number}`,
+          date: installment.date,
+          title: debt.name,
+          amount: -debt.installmentAmount,
+          note: `${installment.number}/${debt.totalInstallments} Paid ✓`,
+        });
+      }
+      continue;
+    }
+    if (installment.date > end) break;
+    drafts.push({
+      id: `debt-${debt.id}-${installment.number}`,
+      scheduledDate: installment.date,
+      kind: 'debt',
+      title: `${debt.name} (${installment.number}/${debt.totalInstallments})`,
+      detail: debtDetail(debt, installment, start),
+      // Overdue (before the start date): rebate lost + penalty. Otherwise assume it is paid on time.
+      amount: -amountDueOn(debt, installment, start),
+      isPayroll: false,
     });
   }
-  return scheduledInstallments(debt, cycle, MONTHS_AHEAD).map((installment) => ({
-    id: `debt-${debt.id}-${installment.monthOffset}`,
-    scheduledDate: installment.date,
-    kind: 'debt' as const,
-    title: `${debt.name} (${installment.installmentNumber}/${debt.totalInstallments})`,
-    detail: installment.installmentNumber === debt.totalInstallments ? `${debt.lender} • FINAL installment` : debt.lender,
-    amount: -debt.monthlyAmount,
-    isPayroll: false,
-  }));
+  return drafts;
 }
 
 function cardDrafts(card: CreditCard, start: IsoDate, end: IsoDate, completed: CompletedItem[]): DraftEvent[] {
@@ -186,7 +207,7 @@ export function buildLedger(snapshot: FinanceSnapshot, today: IsoDate): Ledger {
 
   const drafts: DraftEvent[] = [
     ...snapshot.incomes.flatMap((rule) => incomeDrafts(rule, cycle, completed)),
-    ...snapshot.debts.flatMap((debt) => debtDrafts(debt, cycle, completed)),
+    ...snapshot.debts.flatMap((debt) => debtDrafts(debt, cycle, startDate, endDate, completed)),
     ...snapshot.cards.flatMap((card) => cardDrafts(card, startDate, endDate, completed)),
   ];
 
@@ -220,6 +241,16 @@ export function allEvents(ledger: Ledger): LedgerEvent[] {
   return ledger.months.flatMap((month) => month.events);
 }
 
-export function activeLoanCount(debts: DebtSchedule[]): number {
-  return debts.filter((debt) => debt.paidThisMonth || remainingInstallments(debt) > 0).length;
+/** Still being paid, or had an installment paid in the cycle month. */
+function isActiveLoan(debt: DebtSchedule, cycle: YearMonth): boolean {
+  return remainingInstallments(debt) > 0 || installments(debt).some((item) => item.paid && isSameYearMonth(yearMonthOf(item.date), cycle));
+}
+
+export function activeLoanCount(debts: DebtSchedule[], cycle: YearMonth): number {
+  return debts.filter((debt) => isActiveLoan(debt, cycle)).length;
+}
+
+/** Active loans with every installment due through the end of the cycle month paid. */
+export function clearedLoanCount(debts: DebtSchedule[], cycle: YearMonth): number {
+  return debts.filter((debt) => isActiveLoan(debt, cycle) && isSettledThrough(debt, lastDayOf(cycle))).length;
 }

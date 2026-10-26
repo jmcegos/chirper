@@ -2,9 +2,10 @@ import 'server-only';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { addMonths, formatMonthLabel, parseYearMonthKey, yearMonthKey, type IsoDate } from './domain/calendar';
-import type { CreditCard, DebtSchedule, FinanceSettings, FinanceSnapshot, IncomeRule, QuickExpense } from './domain/types';
-import { SEED_CREDIT_CARDS, SEED_DEBT_SCHEDULES, SEED_INCOME_RULES, SEED_SETTINGS } from './seed';
+import { addMonths, dateOf, dayOf, formatMonthLabel, parseYearMonthKey, yearMonthKey, yearMonthOf, type IsoDate } from './domain/calendar';
+import { legacyFirstDueDate } from './domain/loans';
+import type { CreditCard, DebtSchedule, FinanceSettings, FinanceSnapshot, IncomeRule, LoanFrequency, QuickExpense } from './domain/types';
+import { SEED_CREDIT_CARDS, SEED_DEBT_SCHEDULES, SEED_INCOME_RULES, SEED_LOAN_PAYMENTS, seedSettings } from './seed';
 
 const DB_PATH = path.join(process.cwd(), 'finance.db');
 const BACKUP_DIR = path.join(process.cwd(), 'backups');
@@ -33,9 +34,21 @@ const SCHEMA = `
     due_day            INTEGER NOT NULL,
     monthly_amount     REAL    NOT NULL,
     total_installments INTEGER NOT NULL,
-    paid_installments  INTEGER NOT NULL DEFAULT 0,
-    paid_this_month    INTEGER NOT NULL DEFAULT 0,
-    notes              TEXT    NOT NULL DEFAULT ''
+    paid_installments  INTEGER NOT NULL DEFAULT 0,  -- legacy; superseded by loan_payments
+    paid_this_month    INTEGER NOT NULL DEFAULT 0,  -- legacy; superseded by loan_payments
+    notes              TEXT    NOT NULL DEFAULT '',
+    loan_date          TEXT,
+    first_due_date     TEXT,
+    frequency          TEXT    NOT NULL DEFAULT 'monthly',
+    rebate_amount      REAL    NOT NULL DEFAULT 0,
+    penalty_amount     REAL    NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS loan_payments (
+    debt_id            INTEGER NOT NULL REFERENCES debt_schedules (id) ON DELETE CASCADE,
+    installment_number INTEGER NOT NULL,
+    paid_at            INTEGER NOT NULL,  -- insertion order, so undo removes the latest payment
+    amount_paid        REAL,              -- cash actually paid; NULL when assumed paid on entry
+    PRIMARY KEY (debt_id, installment_number)
   );
   CREATE TABLE IF NOT EXISTS credit_cards (
     id                      INTEGER PRIMARY KEY,
@@ -65,7 +78,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS agent_messages_thread ON agent_messages (thread_date, id);
 `;
 
-const TABLES = ['settings', 'income_rules', 'debt_schedules', 'credit_cards', 'quick_expenses'] as const;
+const TABLES = ['settings', 'income_rules', 'loan_payments', 'debt_schedules', 'credit_cards', 'quick_expenses'] as const;
 
 /* ───────────────────────────── connection ───────────────────────────── */
 
@@ -76,8 +89,58 @@ function open(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db);
   if (isEmpty(db)) seed(db);
   return db;
+}
+
+/* ───────────────────────────── migrations ───────────────────────────── */
+
+/** Columns added after the first release, per table. `CREATE TABLE IF NOT EXISTS` never adds them to an old table. */
+const COLUMNS_ADDED: Record<string, Record<string, string>> = {
+  debt_schedules: {
+    loan_date: 'TEXT',
+    first_due_date: 'TEXT',
+    frequency: "TEXT NOT NULL DEFAULT 'monthly'",
+    rebate_amount: 'REAL NOT NULL DEFAULT 0',
+    penalty_amount: 'REAL NOT NULL DEFAULT 0',
+  },
+  loan_payments: { amount_paid: 'REAL' },
+};
+
+function addMissingColumns(db: Database.Database): void {
+  for (const [table, columns] of Object.entries(COLUMNS_ADDED)) {
+    const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+    for (const [column, type] of Object.entries(columns)) {
+      if (!existing.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
+}
+
+/**
+ * Brings an older database up to date: adds missing columns, then converts
+ * each undated loan's due day, paid count and `paid_this_month` flag into a
+ * first due date and paid installment rows.
+ */
+function migrate(db: Database.Database): void {
+  addMissingColumns(db);
+
+  const undated = db.prepare('SELECT id, due_day, paid_installments, paid_this_month FROM debt_schedules WHERE first_due_date IS NULL').all() as Row[];
+  if (undated.length === 0) return;
+  const cycle = readSettings(db).cycleMonth;
+  db.transaction(() => {
+    for (const row of undated) {
+      const firstDue = legacyFirstDueDate(num(row.due_day), num(row.paid_installments), bool(row.paid_this_month), cycle);
+      db.prepare('UPDATE debt_schedules SET first_due_date = ?, loan_date = ? WHERE id = ?').run(firstDue, dateOfPreviousMonth(firstDue), row.id);
+      for (let n = 1; n <= num(row.paid_installments); n++) {
+        db.prepare('INSERT OR IGNORE INTO loan_payments (debt_id, installment_number, paid_at) VALUES (?, ?, ?)').run(row.id, n, n);
+      }
+    }
+  })();
+}
+
+function dateOfPreviousMonth(date: IsoDate): IsoDate {
+  return dateOf(addMonths(yearMonthOf(date), -1), dayOf(date));
 }
 
 function connection(): Database.Database {
@@ -102,9 +165,10 @@ function insertRows(db: Database.Database, table: string, rows: Array<Record<str
 
 function seed(db: Database.Database): void {
   db.transaction(() => {
-    insertRows(db, 'settings', Object.entries(SEED_SETTINGS).map(([key, value]) => ({ key, value })));
+    insertRows(db, 'settings', Object.entries(seedSettings()).map(([key, value]) => ({ key, value })));
     insertRows(db, 'income_rules', SEED_INCOME_RULES);
     insertRows(db, 'debt_schedules', SEED_DEBT_SCHEDULES);
+    insertRows(db, 'loan_payments', SEED_LOAN_PAYMENTS);
     insertRows(db, 'credit_cards', SEED_CREDIT_CARDS);
   })();
 }
@@ -139,18 +203,49 @@ function toIncomeRule(row: Row): IncomeRule {
   };
 }
 
-function toDebtSchedule(row: Row): DebtSchedule {
+interface LoanPayments {
+  paidInstallmentNumbers: number[];
+  lastPayment: DebtSchedule['lastPayment'];
+}
+
+const NO_PAYMENTS: LoanPayments = { paidInstallmentNumbers: [], lastPayment: null };
+
+function toDebtSchedule(row: Row, payments: LoanPayments): DebtSchedule {
   return {
     id: num(row.id),
     name: str(row.name),
     lender: str(row.lender),
-    dueDay: num(row.due_day),
-    monthlyAmount: num(row.monthly_amount),
+    loanDate: str(row.loan_date),
+    firstDueDate: str(row.first_due_date),
+    frequency: str(row.frequency) as LoanFrequency,
+    installmentAmount: num(row.monthly_amount),
     totalInstallments: num(row.total_installments),
-    paidInstallments: num(row.paid_installments),
-    paidThisMonth: bool(row.paid_this_month),
+    paidInstallmentNumbers: [...payments.paidInstallmentNumbers],
+    rebateAmount: num(row.rebate_amount),
+    penaltyAmount: num(row.penalty_amount),
+    lastPayment: payments.lastPayment,
     notes: str(row.notes),
   };
+}
+
+/** Paid installment numbers (ascending) and the latest payment, per loan id. */
+function paymentsByDebt(db: Database.Database, debtId?: number): Map<number, LoanPayments> {
+  const rows = (
+    debtId === undefined
+      ? db.prepare('SELECT * FROM loan_payments ORDER BY installment_number').all()
+      : db.prepare('SELECT * FROM loan_payments WHERE debt_id = ? ORDER BY installment_number').all(debtId)
+  ) as Row[];
+  const byDebt = new Map<number, LoanPayments & { lastPaidAt: number }>();
+  for (const row of rows) {
+    const entry = byDebt.get(num(row.debt_id)) ?? { paidInstallmentNumbers: [], lastPayment: null, lastPaidAt: -1 };
+    entry.paidInstallmentNumbers.push(num(row.installment_number));
+    if (num(row.paid_at) > entry.lastPaidAt) {
+      entry.lastPaidAt = num(row.paid_at);
+      entry.lastPayment = { number: num(row.installment_number), amountPaid: row.amount_paid === null ? null : num(row.amount_paid) };
+    }
+    byDebt.set(num(row.debt_id), entry);
+  }
+  return byDebt;
 }
 
 function toCreditCard(row: Row): CreditCard {
@@ -188,10 +283,11 @@ function readSettings(db: Database.Database): FinanceSettings {
 
 export function getSnapshot(): FinanceSnapshot {
   const db = connection();
+  const payments = paymentsByDebt(db);
   return {
     settings: readSettings(db),
     incomes: (db.prepare('SELECT * FROM income_rules ORDER BY day_of_month, id').all() as Row[]).map(toIncomeRule),
-    debts: (db.prepare('SELECT * FROM debt_schedules ORDER BY due_day, id').all() as Row[]).map(toDebtSchedule),
+    debts: (db.prepare('SELECT * FROM debt_schedules ORDER BY first_due_date, id').all() as Row[]).map((row) => toDebtSchedule(row, payments.get(num(row.id)) ?? NO_PAYMENTS)),
     cards: (db.prepare('SELECT * FROM credit_cards ORDER BY id').all() as Row[]).map(toCreditCard),
     expenses: (db.prepare('SELECT * FROM quick_expenses ORDER BY date_logged DESC, id DESC').all() as Row[]).map(toQuickExpense),
   };
@@ -203,8 +299,9 @@ export function getIncomeRule(id: number): IncomeRule | null {
 }
 
 export function getDebtSchedule(id: number): DebtSchedule | null {
-  const row = connection().prepare('SELECT * FROM debt_schedules WHERE id = ?').get(id) as Row | undefined;
-  return row ? toDebtSchedule(row) : null;
+  const db = connection();
+  const row = db.prepare('SELECT * FROM debt_schedules WHERE id = ?').get(id) as Row | undefined;
+  return row ? toDebtSchedule(row, paymentsByDebt(db, id).get(id) ?? NO_PAYMENTS) : null;
 }
 
 export function getCreditCard(id: number): CreditCard | null {
@@ -276,10 +373,30 @@ export function setIncomeReceived(incomeId: number, received: boolean, walletDel
   })();
 }
 
-export function setDebtPaid(debtId: number, paid: boolean, paidInstallments: number, walletDelta: number): void {
+/** `amountPaid` is null for installments assumed paid when the loan was entered. */
+function insertLoanPayment(db: Database.Database, debtId: number, installmentNumber: number, amountPaid: number | null): void {
+  const { next } = db.prepare('SELECT COALESCE(MAX(paid_at), 0) + 1 AS next FROM loan_payments').get() as { next: number };
+  db.prepare('INSERT OR IGNORE INTO loan_payments (debt_id, installment_number, paid_at, amount_paid) VALUES (?, ?, ?, ?)').run(
+    debtId,
+    installmentNumber,
+    next,
+    amountPaid,
+  );
+}
+
+/** Marks one installment paid at `amountPaid`; `walletDelta` is applied atomically (0 = no sync). */
+export function addLoanPayment(debtId: number, installmentNumber: number, amountPaid: number, walletDelta: number): void {
   const db = connection();
   db.transaction(() => {
-    db.prepare('UPDATE debt_schedules SET paid_this_month = ?, paid_installments = ? WHERE id = ?').run(paid ? 1 : 0, paidInstallments, debtId);
+    insertLoanPayment(db, debtId, installmentNumber, amountPaid);
+    adjustWalletWith(db, walletDelta);
+  })();
+}
+
+export function removeLoanPayment(debtId: number, installmentNumber: number, walletDelta: number): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare('DELETE FROM loan_payments WHERE debt_id = ? AND installment_number = ?').run(debtId, installmentNumber);
     adjustWalletWith(db, walletDelta);
   })();
 }
@@ -287,10 +404,13 @@ export function setDebtPaid(debtId: number, paid: boolean, paidInstallments: num
 export interface DebtInput {
   name: string;
   lender: string;
-  dueDay: number;
-  monthlyAmount: number;
+  loanDate: IsoDate;
+  firstDueDate: IsoDate;
+  frequency: LoanFrequency;
+  installmentAmount: number;
   totalInstallments: number;
-  paidInstallments: number;
+  rebateAmount: number;
+  penaltyAmount: number;
   notes: string;
 }
 
@@ -298,32 +418,60 @@ function debtParams(input: DebtInput) {
   return {
     name: input.name,
     lender: input.lender,
-    due_day: input.dueDay,
-    monthly_amount: input.monthlyAmount,
+    loan_date: input.loanDate,
+    first_due_date: input.firstDueDate,
+    frequency: input.frequency,
+    // Legacy NOT NULL column; nothing reads it any more.
+    due_day: dayOf(input.firstDueDate),
+    monthly_amount: input.installmentAmount,
     total_installments: input.totalInstallments,
-    paid_installments: input.paidInstallments,
+    rebate_amount: input.rebateAmount,
+    penalty_amount: input.penaltyAmount,
     notes: input.notes,
   };
 }
 
-export function insertDebt(input: DebtInput): number {
-  const result = connection()
-    .prepare(
-      `INSERT INTO debt_schedules (name, lender, due_day, monthly_amount, total_installments, paid_installments, paid_this_month, notes)
-       VALUES (@name, @lender, @due_day, @monthly_amount, @total_installments, @paid_installments, 0, @notes)`,
-    )
-    .run(debtParams(input));
-  return Number(result.lastInsertRowid);
+/**
+ * Makes a loan's paid installments exactly `paidNumbers`. Rows that stay keep
+ * their recorded amount; new ones are entered as assumed paid (no amount).
+ */
+function writePaidNumbers(db: Database.Database, debtId: number, paidNumbers: number[]): void {
+  const keep = new Set(paidNumbers);
+  const existing = (db.prepare('SELECT installment_number FROM loan_payments WHERE debt_id = ?').all(debtId) as Row[]).map((row) => num(row.installment_number));
+  for (const n of existing) {
+    if (!keep.has(n)) db.prepare('DELETE FROM loan_payments WHERE debt_id = ? AND installment_number = ?').run(debtId, n);
+  }
+  for (const n of [...keep].sort((a, b) => a - b)) insertLoanPayment(db, debtId, n, null);
 }
 
-export function updateDebt(id: number, input: DebtInput): void {
-  connection()
-    .prepare(
-      `UPDATE debt_schedules SET name = @name, lender = @lender, due_day = @due_day, monthly_amount = @monthly_amount,
-         total_installments = @total_installments, paid_installments = @paid_installments, notes = @notes
+/** Inserts the loan with its paid installments. Never touches the wallet. */
+export function insertDebt(input: DebtInput, paidNumbers: number[]): number {
+  const db = connection();
+  return db.transaction(() => {
+    const result = db
+      .prepare(
+        `INSERT INTO debt_schedules (name, lender, loan_date, first_due_date, frequency, due_day, monthly_amount, total_installments, rebate_amount, penalty_amount, notes)
+         VALUES (@name, @lender, @loan_date, @first_due_date, @frequency, @due_day, @monthly_amount, @total_installments, @rebate_amount, @penalty_amount, @notes)`,
+      )
+      .run(debtParams(input));
+    const id = Number(result.lastInsertRowid);
+    writePaidNumbers(db, id, paidNumbers);
+    return id;
+  })();
+}
+
+/** Updates the loan; `paidNumbers` (when given) replaces its paid installments. */
+export function updateDebt(id: number, input: DebtInput, paidNumbers?: number[]): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE debt_schedules SET name = @name, lender = @lender, loan_date = @loan_date, first_due_date = @first_due_date,
+         frequency = @frequency, due_day = @due_day, monthly_amount = @monthly_amount, total_installments = @total_installments,
+         rebate_amount = @rebate_amount, penalty_amount = @penalty_amount, notes = @notes
        WHERE id = @id`,
-    )
-    .run({ ...debtParams(input), id });
+    ).run({ ...debtParams(input), id });
+    if (paidNumbers) writePaidNumbers(db, id, paidNumbers);
+  })();
 }
 
 export function deleteDebt(id: number): void {
@@ -399,15 +547,14 @@ export function deleteQuickExpense(id: number): QuickExpense | null {
 }
 
 /**
- * Rolls the cycle forward one month: clears received/paid flags (installment
- * counts stay) and promotes next-month absences into the new current month.
+ * Rolls the cycle forward one month: clears income received and card paid
+ * flags and promotes next-month absences. Loans are date-driven and untouched.
  */
 export function startNewMonthCycle(): void {
   const db = connection();
   db.transaction(() => {
     const next = addMonths(readSettings(db).cycleMonth, 1);
     db.prepare('UPDATE income_rules SET received_this_month = 0, current_absences = next_month_absences, next_month_absences = 0').run();
-    db.prepare('UPDATE debt_schedules SET paid_this_month = 0').run();
     db.prepare('UPDATE credit_cards SET paid_this_month = 0').run();
     db.prepare("UPDATE settings SET value = ? WHERE key = 'cycle_month'").run(yearMonthKey(next));
     db.prepare("UPDATE settings SET value = ? WHERE key = 'current_month_label'").run(formatMonthLabel(next));

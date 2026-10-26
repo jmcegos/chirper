@@ -72,6 +72,16 @@ export function daysBetween(from: IsoDate, to: IsoDate): number {
   return Math.round((toUtcMillis(to) - toUtcMillis(from)) / MS_PER_DAY);
 }
 
+export function addDays(date: IsoDate, count: number): IsoDate {
+  const shifted = new Date(toUtcMillis(date) + count * MS_PER_DAY);
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}`;
+}
+
+/** A real calendar date in `YYYY-MM-DD` form (rejects 2026-02-30). */
+export function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && addDays(value, 0) === value;
+}
+
 export function maxDate(a: IsoDate, b: IsoDate): IsoDate {
   return a > b ? a : b;
 }
