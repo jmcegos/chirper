@@ -1,5 +1,6 @@
 import 'server-only';
 import { firstDayOf, formatLongDate, isIsoDate, lastDayOf, maxDate, todayLocal, type IsoDate } from './domain/calendar';
+import { BILL_FREQUENCIES, billFrequencyLabel, isBillDone, isBillSettledThrough, isScheduledDate, lastBillPayment, nextUnpaidOccurrence } from './domain/bills';
 import { currentBill } from './domain/creditCard';
 import { LOAN_FREQUENCIES, amountDueOn, frequencyLabel, isSettledThrough, nextUnpaid, onTimeAmount, pastDueNumbers } from './domain/loans';
 import type { DebtSchedule } from './domain/types';
@@ -250,6 +251,81 @@ export function deleteLoan(debtId: number): string {
   const debt = found(db.getDebtSchedule(debtId), 'Loan');
   db.deleteDebt(debtId);
   return `Deleted loan ${debt.name}`;
+}
+
+/* ─────────────────────── bills & planned expenses ──────────────────── */
+
+function validBill(input: db.BillInput): db.BillInput {
+  if (!BILL_FREQUENCIES.includes(input.frequency)) throw new CommandError('Frequency must be "monthly", "every_15_days", "yearly" or "one_time".');
+  return {
+    name: nonEmpty(input.name, 'Bill name'),
+    frequency: input.frequency,
+    nextDueDate: isoDate(input.nextDueDate, 'Next due date'),
+    estimatedAmount: pesos(input.estimatedAmount, 'Estimated amount', { allowZero: false }),
+    notes: input.notes.trim(),
+  };
+}
+
+export function addBill(input: db.BillInput): string {
+  const bill = validBill(input);
+  const id = db.insertBill(bill);
+  return `Added bill #${id} ${bill.name} (${formatPeso(bill.estimatedAmount)}, ${billFrequencyLabel(bill)}, next due ${formatLongDate(bill.nextDueDate)})`;
+}
+
+/** Changing the schedule drops recorded amounts/payments for dates no longer on it. */
+export function updateBill(billId: number, changes: Partial<db.BillInput>): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  const updated = validBill({ ...bill, ...defined(changes) });
+  const stale = bill.records.map((record) => record.dueDate).filter((date) => !isScheduledDate(updated, date));
+  db.updateBill(billId, updated, stale);
+  return `Updated bill ${updated.name}`;
+}
+
+export function deleteBill(billId: number): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  db.deleteBill(billId);
+  return `Deleted bill ${bill.name}`;
+}
+
+/** Records the billed amount for `dueDate`, by default the oldest unpaid due date. */
+export function setBillAmount(billId: number, amount: number, dueDate?: IsoDate): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  const date = dueDate === undefined ? nextUnpaidOccurrence(bill)?.dueDate : isoDate(dueDate, 'Due date');
+  if (!date) throw new CommandError(`${bill.name} has no unpaid due date.`);
+  if (!isScheduledDate(bill, date)) throw new CommandError(`${date} is not a due date of ${bill.name}.`);
+  const billed = pesos(amount, 'Billed amount');
+  db.setBillActualAmount(billId, date, billed);
+  return `${bill.name} due ${formatLongDate(date)} billed at ${formatPeso(billed)}`;
+}
+
+/** Pays the oldest unpaid due date (overdue first) at its billed amount, or the estimate. */
+export function payNextBill(billId: number, syncWallet: boolean): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  const next = nextUnpaidOccurrence(bill);
+  if (!next) return `${bill.name} is already paid`;
+  const delta = syncWallet ? -next.amount : 0;
+  db.addBillPayment(billId, next.dueDate, next.amount, delta);
+  return `${bill.name} due ${formatLongDate(next.dueDate)} paid ${formatPeso(next.amount)}${next.isEstimate ? ' (estimate)' : ''} (${walletNote(delta)})`;
+}
+
+export function undoLastBillPayment(billId: number, syncWallet: boolean): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  const last = lastBillPayment(bill);
+  if (!last) return `${bill.name} has no payments to undo`;
+  const delta = syncWallet ? last.paidAmount : 0;
+  db.removeBillPayment(billId, last.dueDate, delta);
+  return `${bill.name} due ${formatLongDate(last.dueDate)} marked unpaid (${walletNote(delta)})`;
+}
+
+export function setBillPaid(billId: number, paid: boolean, syncWallet: boolean): string {
+  return paid ? payNextBill(billId, syncWallet) : undoLastBillPayment(billId, syncWallet);
+}
+
+/** The card's toggle: pay the next due date until the cycle month is settled, then undo. */
+export function toggleBillPaid(billId: number, syncWallet: boolean): string {
+  const bill = found(db.getBill(billId), 'Bill');
+  const settled = isBillDone(bill) || isBillSettledThrough(bill, lastDayOf(db.getSnapshot().settings.cycleMonth));
+  return setBillPaid(billId, !settled, syncWallet);
 }
 
 /* ──────────────────────────── credit cards ─────────────────────────── */

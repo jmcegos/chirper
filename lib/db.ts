@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { addMonths, dateOf, dayOf, formatMonthLabel, parseYearMonthKey, yearMonthKey, yearMonthOf, type IsoDate } from './domain/calendar';
 import { legacyFirstDueDate } from './domain/loans';
-import type { CreditCard, DebtSchedule, FinanceSettings, FinanceSnapshot, IncomeRule, LoanFrequency, QuickExpense } from './domain/types';
+import type { Bill, BillFrequency, BillRecord, CreditCard, DebtSchedule, FinanceSettings, FinanceSnapshot, IncomeRule, LoanFrequency, QuickExpense } from './domain/types';
 import { SEED_CREDIT_CARDS, SEED_DEBT_SCHEDULES, SEED_INCOME_RULES, SEED_LOAN_PAYMENTS, seedSettings } from './seed';
 
 const DB_PATH = path.join(process.cwd(), 'finance.db');
@@ -63,6 +63,22 @@ const SCHEMA = `
     last_settled_due        TEXT,
     last_paid_amount        REAL    NOT NULL DEFAULT 0
   );
+  CREATE TABLE IF NOT EXISTS bills (
+    id               INTEGER PRIMARY KEY,
+    name             TEXT NOT NULL,
+    frequency        TEXT NOT NULL,           -- monthly | every_15_days | yearly | one_time
+    next_due_date    TEXT NOT NULL,           -- first due date tracked; earlier ones are ignored
+    estimated_amount REAL NOT NULL,
+    notes            TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS bill_occurrences (  -- sparse: only due dates with something recorded
+    bill_id       INTEGER NOT NULL REFERENCES bills (id) ON DELETE CASCADE,
+    due_date      TEXT NOT NULL,
+    actual_amount REAL,                        -- billed amount, when known
+    paid_amount   REAL,                        -- NULL = unpaid
+    paid_at       INTEGER,                     -- insertion order, so undo removes the latest payment
+    PRIMARY KEY (bill_id, due_date)
+  );
   CREATE TABLE IF NOT EXISTS quick_expenses (
     id          INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
@@ -78,7 +94,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS agent_messages_thread ON agent_messages (thread_date, id);
 `;
 
-const TABLES = ['settings', 'income_rules', 'loan_payments', 'debt_schedules', 'credit_cards', 'quick_expenses'] as const;
+const TABLES = ['settings', 'income_rules', 'loan_payments', 'debt_schedules', 'credit_cards', 'bill_occurrences', 'bills', 'quick_expenses'] as const;
 
 /* ───────────────────────────── connection ───────────────────────────── */
 
@@ -264,6 +280,35 @@ function toCreditCard(row: Row): CreditCard {
   };
 }
 
+function toBillRecord(row: Row): BillRecord {
+  const optional = (value: unknown) => (value === null || value === undefined ? null : num(value));
+  return { dueDate: str(row.due_date), actualAmount: optional(row.actual_amount), paidAmount: optional(row.paid_amount), paidAt: optional(row.paid_at) };
+}
+
+/** Recorded occurrences per bill id, by due date. */
+function billRecordsById(db: Database.Database, billId?: number): Map<number, BillRecord[]> {
+  const rows = (
+    billId === undefined
+      ? db.prepare('SELECT * FROM bill_occurrences ORDER BY due_date').all()
+      : db.prepare('SELECT * FROM bill_occurrences WHERE bill_id = ? ORDER BY due_date').all(billId)
+  ) as Row[];
+  const byBill = new Map<number, BillRecord[]>();
+  for (const row of rows) byBill.set(num(row.bill_id), [...(byBill.get(num(row.bill_id)) ?? []), toBillRecord(row)]);
+  return byBill;
+}
+
+function toBill(row: Row, records: BillRecord[]): Bill {
+  return {
+    id: num(row.id),
+    name: str(row.name),
+    frequency: str(row.frequency) as BillFrequency,
+    nextDueDate: str(row.next_due_date),
+    estimatedAmount: num(row.estimated_amount),
+    notes: str(row.notes),
+    records,
+  };
+}
+
 function toQuickExpense(row: Row): QuickExpense {
   return { id: num(row.id), description: str(row.description), amount: num(row.amount), dateLogged: str(row.date_logged) };
 }
@@ -284,11 +329,13 @@ function readSettings(db: Database.Database): FinanceSettings {
 export function getSnapshot(): FinanceSnapshot {
   const db = connection();
   const payments = paymentsByDebt(db);
+  const billRecords = billRecordsById(db);
   return {
     settings: readSettings(db),
     incomes: (db.prepare('SELECT * FROM income_rules ORDER BY day_of_month, id').all() as Row[]).map(toIncomeRule),
     debts: (db.prepare('SELECT * FROM debt_schedules ORDER BY first_due_date, id').all() as Row[]).map((row) => toDebtSchedule(row, payments.get(num(row.id)) ?? NO_PAYMENTS)),
     cards: (db.prepare('SELECT * FROM credit_cards ORDER BY id').all() as Row[]).map(toCreditCard),
+    bills: (db.prepare('SELECT * FROM bills ORDER BY next_due_date, id').all() as Row[]).map((row) => toBill(row, billRecords.get(num(row.id)) ?? [])),
     expenses: (db.prepare('SELECT * FROM quick_expenses ORDER BY date_logged DESC, id DESC').all() as Row[]).map(toQuickExpense),
   };
 }
@@ -302,6 +349,12 @@ export function getDebtSchedule(id: number): DebtSchedule | null {
   const db = connection();
   const row = db.prepare('SELECT * FROM debt_schedules WHERE id = ?').get(id) as Row | undefined;
   return row ? toDebtSchedule(row, paymentsByDebt(db, id).get(id) ?? NO_PAYMENTS) : null;
+}
+
+export function getBill(id: number): Bill | null {
+  const db = connection();
+  const row = db.prepare('SELECT * FROM bills WHERE id = ?').get(id) as Row | undefined;
+  return row ? toBill(row, billRecordsById(db, id).get(id) ?? []) : null;
 }
 
 export function getCreditCard(id: number): CreditCard | null {
@@ -471,6 +524,78 @@ export function updateDebt(id: number, input: DebtInput, paidNumbers?: number[])
        WHERE id = @id`,
     ).run({ ...debtParams(input), id });
     if (paidNumbers) writePaidNumbers(db, id, paidNumbers);
+  })();
+}
+
+export interface BillInput {
+  name: string;
+  frequency: BillFrequency;
+  nextDueDate: IsoDate;
+  estimatedAmount: number;
+  notes: string;
+}
+
+function billParams(input: BillInput) {
+  return { name: input.name, frequency: input.frequency, next_due_date: input.nextDueDate, estimated_amount: input.estimatedAmount, notes: input.notes };
+}
+
+export function insertBill(input: BillInput): number {
+  const result = connection()
+    .prepare(
+      `INSERT INTO bills (name, frequency, next_due_date, estimated_amount, notes)
+       VALUES (@name, @frequency, @next_due_date, @estimated_amount, @notes)`,
+    )
+    .run(billParams(input));
+  return Number(result.lastInsertRowid);
+}
+
+/** Updates the bill and drops recorded occurrences for `staleDates` (no longer on its schedule). */
+export function updateBill(id: number, input: BillInput, staleDates: IsoDate[]): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE bills SET name = @name, frequency = @frequency, next_due_date = @next_due_date,
+         estimated_amount = @estimated_amount, notes = @notes
+       WHERE id = @id`,
+    ).run({ ...billParams(input), id });
+    for (const date of staleDates) db.prepare('DELETE FROM bill_occurrences WHERE bill_id = ? AND due_date = ?').run(id, date);
+  })();
+}
+
+export function deleteBill(id: number): void {
+  connection().prepare('DELETE FROM bills WHERE id = ?').run(id);
+}
+
+/** Records the billed amount for one due date. */
+export function setBillActualAmount(billId: number, dueDate: IsoDate, amount: number): void {
+  connection()
+    .prepare(
+      `INSERT INTO bill_occurrences (bill_id, due_date, actual_amount) VALUES (?, ?, ?)
+       ON CONFLICT (bill_id, due_date) DO UPDATE SET actual_amount = excluded.actual_amount`,
+    )
+    .run(billId, dueDate, amount);
+}
+
+/** Marks one due date paid at `amount`; `walletDelta` is applied atomically (0 = no sync). */
+export function addBillPayment(billId: number, dueDate: IsoDate, amount: number, walletDelta: number): void {
+  const db = connection();
+  db.transaction(() => {
+    const { next } = db.prepare('SELECT COALESCE(MAX(paid_at), 0) + 1 AS next FROM bill_occurrences').get() as { next: number };
+    db.prepare(
+      `INSERT INTO bill_occurrences (bill_id, due_date, paid_amount, paid_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (bill_id, due_date) DO UPDATE SET paid_amount = excluded.paid_amount, paid_at = excluded.paid_at`,
+    ).run(billId, dueDate, amount, next);
+    adjustWalletWith(db, walletDelta);
+  })();
+}
+
+/** Un-marks a payment, keeping any billed amount recorded for that due date. */
+export function removeBillPayment(billId: number, dueDate: IsoDate, walletDelta: number): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare('UPDATE bill_occurrences SET paid_amount = NULL, paid_at = NULL WHERE bill_id = ? AND due_date = ?').run(billId, dueDate);
+    db.prepare('DELETE FROM bill_occurrences WHERE bill_id = ? AND due_date = ? AND actual_amount IS NULL').run(billId, dueDate);
+    adjustWalletWith(db, walletDelta);
   })();
 }
 

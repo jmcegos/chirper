@@ -13,16 +13,17 @@ import {
   type IsoDate,
   type YearMonth,
 } from './calendar';
+import { occurrencesThrough } from './bills';
 import { upcomingBills } from './creditCard';
 import { amountDueOn, installments, isSettledThrough, remainingInstallments, type Installment } from './loans';
 import { formatPeso, toCentavos, toPesos } from './money';
 import { absenceDeduction, netPay } from './payroll';
-import type { CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule } from './types';
+import type { Bill, CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule } from './types';
 
 /** Current cycle month + the next two (the second one is the expandable view). */
 export const MONTHS_AHEAD = 2;
 
-export type LedgerEventKind = 'income' | 'debt' | 'card-due' | 'card-statement';
+export type LedgerEventKind = 'income' | 'debt' | 'bill' | 'card-due' | 'card-statement';
 
 export interface LedgerEvent {
   id: string;
@@ -67,7 +68,7 @@ export interface Ledger {
 type DraftEvent = Omit<LedgerEvent, 'runningBalance' | 'date' | 'overdue'>;
 
 /** Same-day ordering: money lands, then info, then money leaves. */
-const KIND_ORDER: Record<LedgerEventKind, number> = { income: 0, 'card-statement': 1, debt: 2, 'card-due': 2 };
+const KIND_ORDER: Record<LedgerEventKind, number> = { income: 0, 'card-statement': 1, debt: 2, bill: 2, 'card-due': 2 };
 
 function incomeAbsencesFor(rule: IncomeRule, monthOffset: number): number {
   if (monthOffset === 0) return rule.currentAbsences;
@@ -133,6 +134,35 @@ function debtDrafts(debt: DebtSchedule, cycle: YearMonth, start: IsoDate, end: I
       detail: debtDetail(debt, installment, start),
       // Overdue (before the start date): rebate lost + penalty. Otherwise assume it is paid on time.
       amount: -amountDueOn(debt, installment, start),
+      isPayroll: false,
+    });
+  }
+  return drafts;
+}
+
+/**
+ * Every unpaid due date up to `end` is an outflow at its billed amount (or the
+ * estimate); one due before the ledger start is rolled onto it as overdue.
+ * Due dates paid in the cycle month are reported as completed.
+ */
+function billDrafts(bill: Bill, cycle: YearMonth, end: IsoDate, completed: CompletedItem[]): DraftEvent[] {
+  const drafts: DraftEvent[] = [];
+  for (const occurrence of occurrencesThrough(bill, end)) {
+    const id = `bill-${bill.id}-${occurrence.dueDate}`;
+    if (occurrence.paid) {
+      if (isSameYearMonth(yearMonthOf(occurrence.dueDate), cycle)) {
+        completed.push({ id, date: occurrence.dueDate, title: bill.name, amount: -(occurrence.paidAmount ?? 0), note: 'Paid ✓' });
+      }
+      continue;
+    }
+    const amountNote = occurrence.isEstimate ? `Est. ${formatPeso(occurrence.amount)}` : 'Billed';
+    drafts.push({
+      id,
+      scheduledDate: occurrence.dueDate,
+      kind: 'bill',
+      title: bill.name,
+      detail: [amountNote, bill.notes].filter(Boolean).join(' • '),
+      amount: -occurrence.amount,
       isPayroll: false,
     });
   }
@@ -209,6 +239,7 @@ export function buildLedger(snapshot: FinanceSnapshot, today: IsoDate): Ledger {
     ...snapshot.incomes.flatMap((rule) => incomeDrafts(rule, cycle, completed)),
     ...snapshot.debts.flatMap((debt) => debtDrafts(debt, cycle, startDate, endDate, completed)),
     ...snapshot.cards.flatMap((card) => cardDrafts(card, startDate, endDate, completed)),
+    ...snapshot.bills.flatMap((bill) => billDrafts(bill, cycle, endDate, completed)),
   ];
 
   const ordered = drafts

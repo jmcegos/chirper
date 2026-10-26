@@ -50,6 +50,29 @@ export interface CreditCard {
   lastPaidAmount: number;
 }
 
+export type BillFrequency = 'monthly' | 'every_15_days' | 'yearly' | 'one_time';
+
+/** What has been recorded for one due date: its billed amount and/or its payment. */
+export interface BillRecord {
+  dueDate: IsoDate;
+  actualAmount: number | null;
+  paidAmount: number | null;
+  /** Insertion order of the payment, so undo removes the latest one. */
+  paidAt: number | null;
+}
+
+export interface Bill {
+  id: number;
+  name: string;
+  frequency: BillFrequency;
+  /** First due date tracked; earlier ones are ignored. */
+  nextDueDate: IsoDate;
+  /** Used for any due date with no billed amount yet. */
+  estimatedAmount: number;
+  notes: string;
+  records: BillRecord[];
+}
+
 export interface QuickExpense {
   id: number;
   description: string;
@@ -69,5 +92,6 @@ export interface FinanceSnapshot {
   incomes: IncomeRule[];
   debts: DebtSchedule[];
   cards: CreditCard[];
+  bills: Bill[];
   expenses: QuickExpense[];
 }

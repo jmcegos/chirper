@@ -1,4 +1,4 @@
-import { AlertOctagon, ArrowDownLeft, ArrowUpRight, CreditCard, FileText, Landmark } from 'lucide-react';
+import { AlertOctagon, ArrowDownLeft, ArrowUpRight, CreditCard, FileText, Landmark, Receipt } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { balanceTone, flowTone, Money } from '@/components/ui/Money';
 import { formatShortDate } from '@/lib/domain/calendar';
@@ -10,6 +10,7 @@ const TIGHT_BALANCE = 1000;
 const KIND_ICON: Record<LedgerEventKind, typeof Landmark> = {
   income: ArrowDownLeft,
   debt: Landmark,
+  bill: Receipt,
   'card-due': CreditCard,
   'card-statement': FileText,
 };
@@ -17,6 +18,7 @@ const KIND_ICON: Record<LedgerEventKind, typeof Landmark> = {
 const KIND_DOT: Record<LedgerEventKind, string> = {
   income: 'border-emerald-400 text-emerald-400',
   debt: 'border-rose-400 text-rose-400',
+  bill: 'border-amber-400 text-amber-400',
   'card-due': 'border-rose-400 text-rose-400',
   'card-statement': 'border-sky-400 text-sky-400',
 };

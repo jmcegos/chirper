@@ -1,5 +1,6 @@
 import { Gauge } from 'lucide-react';
 import { AgentDock } from '@/components/agent/AgentDock';
+import { BillPanel } from '@/components/bills/BillPanel';
 import { CreditCardPanel, type CardInsight } from '@/components/card/CreditCardPanel';
 import { QuickExpensePanel } from '@/components/expenses/QuickExpensePanel';
 import { IncomePanel } from '@/components/income/IncomePanel';
@@ -34,7 +35,7 @@ function cardInsight(card: CreditCard, ledger: Ledger): CardInsight {
 
 export default function DashboardPage() {
   const snapshot = getSnapshot();
-  const { settings, incomes, debts, cards, expenses } = snapshot;
+  const { settings, incomes, debts, cards, bills, expenses } = snapshot;
   const ledger = buildLedger(snapshot, todayLocal());
   const cycle = settings.cycleMonth;
   const safeSpend = safeSpendUntilPayday(ledger);
@@ -69,6 +70,7 @@ export default function DashboardPage() {
           <div className="space-y-6 lg:col-span-7">
             <IncomePanel incomes={incomes} cycle={cycle} />
             <LoanPanel debts={debts} cycle={cycle} today={todayLocal()} />
+            <BillPanel bills={bills} cycle={cycle} today={todayLocal()} />
             <CreditCardPanel insights={cards.map((card) => cardInsight(card, ledger))} />
             <QuickExpensePanel
               expenses={expenses}

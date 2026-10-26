@@ -1,4 +1,4 @@
-import { addDays, addMonths, dateOf, dayOf, ordinal, yearMonthOf, type IsoDate, type YearMonth } from './calendar';
+import { addDays, addMonths, addMonthsKeepingDay, dateOf, dayOf, ordinal, yearMonthOf, type IsoDate, type YearMonth } from './calendar';
 import { roundPesos } from './money';
 import type { DebtSchedule, LoanFrequency } from './types';
 
@@ -15,7 +15,7 @@ export type LoanTerms = Pick<DebtSchedule, 'firstDueDate' | 'frequency' | 'total
  */
 export function dueDateOf(terms: Pick<LoanTerms, 'firstDueDate' | 'frequency'>, n: number): IsoDate {
   if (terms.frequency === 'every_15_days') return addDays(terms.firstDueDate, FIFTEEN_DAYS * (n - 1));
-  return dateOf(addMonths(yearMonthOf(terms.firstDueDate), n - 1), dayOf(terms.firstDueDate));
+  return addMonthsKeepingDay(terms.firstDueDate, n - 1);
 }
 
 export function frequencyLabel(terms: Pick<LoanTerms, 'firstDueDate' | 'frequency'>): string {
