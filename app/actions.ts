@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { revalidatePath } from 'next/cache';
 import { AgentUnavailableError, runAgentTurn } from '@/lib/agent/agent';
 import type { AgentImage } from '@/lib/agent/types';
+import type { LoanFrequency } from '@/lib/domain/types';
 import { roundPesos } from '@/lib/domain/money';
 import * as commands from '@/lib/commands';
 
@@ -53,14 +54,20 @@ export async function toggleDebtPaid(debtId: number, syncWallet: boolean): Promi
 
 export async function saveDebt(form: FormData): Promise<void> {
   const id = integer(form, 'id');
+  const unpaid = text(form, 'unpaidPastInstallments');
   const input = {
     name: text(form, 'name'),
     lender: text(form, 'lender'),
-    dueDay: integer(form, 'dueDay'),
-    monthlyAmount: pesos(form, 'monthlyAmount'),
+    loanDate: text(form, 'loanDate'),
+    firstDueDate: text(form, 'firstDueDate'),
+    frequency: text(form, 'frequency') as LoanFrequency,
+    installmentAmount: pesos(form, 'installmentAmount'),
+    rebateAmount: pesos(form, 'rebateAmount'),
+    penaltyAmount: pesos(form, 'penaltyAmount'),
     totalInstallments: integer(form, 'totalInstallments'),
-    paidInstallments: integer(form, 'paidInstallments'),
     notes: text(form, 'notes'),
+    // The form always sends the full list (possibly empty) of past installments left unticked.
+    unpaidPastInstallments: unpaid ? unpaid.split(',').map(Number) : [],
   };
   if (id > 0) commands.updateLoan(id, input);
   else commands.addLoan(input);

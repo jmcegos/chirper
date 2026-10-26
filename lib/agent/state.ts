@@ -4,11 +4,15 @@ import { formatMonthLabel, yearMonthKey, type IsoDate } from '@/lib/domain/calen
 import { currentBill } from '@/lib/domain/creditCard';
 import { debtServiceByMonth, liberationMilestones, safeSpendUntilPayday } from '@/lib/domain/insights';
 import { allEvents, buildLedger } from '@/lib/domain/ledger';
-import { payoffOf, remainingBalance, scheduledInstallments } from '@/lib/domain/loans';
+import { amountDueOn, nextUnpaid, overdueInstallments, paidCount, payoffOf, remainingBalance, type Installment } from '@/lib/domain/loans';
+import type { DebtSchedule } from '@/lib/domain/types';
 import { netPay } from '@/lib/domain/payroll';
 
-const LOOKAHEAD_MONTHS = 600;
 const RECENT_EXPENSES = 15;
+
+function withAmountDue(debt: DebtSchedule, installment: Installment | null, today: IsoDate) {
+  return installment && { number: installment.number, date: installment.date, amountDue: amountDueOn(debt, installment, today) };
+}
 
 /** Everything the agent needs to reason about the user's money, with ids for its tools. */
 export function financialState(today: IsoDate) {
@@ -38,13 +42,17 @@ export function financialState(today: IsoDate) {
       id: debt.id,
       name: debt.name,
       lender: debt.lender,
-      dueDay: debt.dueDay,
-      monthlyAmount: debt.monthlyAmount,
-      installmentsPaid: `${debt.paidInstallments}/${debt.totalInstallments}`,
-      paidThisMonth: debt.paidThisMonth,
-      remainingBalance: remainingBalance(debt),
-      nextInstallment: scheduledInstallments(debt, settings.cycleMonth, LOOKAHEAD_MONTHS)[0] ?? null,
-      finalPaymentDate: payoffOf(debt, settings.cycleMonth)?.finalPaymentDate ?? null,
+      loanDate: debt.loanDate,
+      firstDueDate: debt.firstDueDate,
+      frequency: debt.frequency,
+      installmentAmount: debt.installmentAmount,
+      rebateAmount: debt.rebateAmount,
+      penaltyAmount: debt.penaltyAmount,
+      installmentsPaid: `${paidCount(debt)}/${debt.totalInstallments}`,
+      overdue: overdueInstallments(debt, today).map(({ number, date }) => ({ number, date, amountDue: amountDueOn(debt, { date }, today) })),
+      remainingBalance: remainingBalance(debt, today),
+      nextInstallment: withAmountDue(debt, nextUnpaid(debt), today),
+      finalPaymentDate: payoffOf(debt)?.finalPaymentDate ?? null,
       notes: debt.notes,
     })),
     creditCards: cards.map((card) => ({
@@ -75,7 +83,7 @@ export function financialState(today: IsoDate) {
       })),
     },
     loanServicePerMonth: debtServiceByMonth(ledger).map((row) => ({ month: formatMonthLabel(row.month), total: row.total })),
-    payoffMilestones: liberationMilestones(debts, settings.cycleMonth).map((milestone) => ({
+    payoffMilestones: liberationMilestones(debts).map((milestone) => ({
       finalPaymentDate: milestone.finalPaymentDate,
       loans: milestone.loans.map((loan) => loan.name),
       freedMonthly: milestone.freedMonthly,

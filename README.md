@@ -11,7 +11,7 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-`finance.db` (WAL mode) is created at the project root and seeded with the Oct 17, 2026 state on first run.
+`finance.db` (WAL mode) is created at the project root on first run, starting empty: a ₱0 wallet whose cycle month is the current month. Add incomes, loans and cards from the dashboard or the chat.
 
 ## Fin Agent (talk instead of clicking)
 
@@ -45,7 +45,8 @@ lib/domain/   Pure business rules (no I/O) — shared by server and client
 lib/commands.ts Use cases shared by the dashboard and the agent (validation + summaries)
 lib/agent/    Claude agent: system prompt + tool loop, tools, state report, transcript view
 lib/db.ts     SQLite schema, seed-on-empty, parameterized queries
-lib/seed.ts   Oct 17, 2026 seed data
+lib/seed.ts   Empty starting state (₱0 wallet, current month)
+lib/fixtures/ Oct 17, 2026 sample state used by tests
 app/actions.ts  Server Actions (all mutations → revalidatePath('/'))
 app/page.tsx    Dashboard (server component)
 components/     KPI cards, panels, ledger (client components where interactive)
@@ -58,5 +59,6 @@ components/     KPI cards, panels, ledger (client components where interactive)
 - **Absences** deduct only when entered (> 0), in 0.5-day steps, per cutoff (current and next month).
 - **Credit card**: the statement day is an info row; cash leaves on the next due day. The current bill is `statement_balance` (or the projected spend if higher and the statement hasn't cut yet). Later bills use *Next month projected spend*. Paying a statement zeroes it and remembers the amount for undo.
 - **Received/Paid toggles** ask whether to move the wallet balance too, so a manually synced wallet is never double counted.
-- **Start New Month Cycle** clears received/paid flags, keeps installment counts, and moves next-month absences into the current month.
+- **Loans** have a loan date, a first due date and a frequency (monthly or every 15 days); every due date is derived from those. An optional **on-time rebate** (flat ₱) comes off an installment paid on or before its due date; an optional **late penalty** (flat ₱, once) is added after it. No grace period. Upcoming installments are projected with the rebate, overdue ones with the penalty. Paid installments are tracked one by one in `loan_payments`. When a loan is added, installments due on or before today count as paid unless unticked; unpaid past ones show as overdue. Adding a loan never moves the wallet. The Paid button pays the oldest unpaid installment; undo removes the latest payment.
+- **Start New Month Cycle** clears income received and card paid flags and moves next-month absences into the current month. Loans are date-driven and untouched.
 - **Backup Database** writes an online copy to `./backups/`.

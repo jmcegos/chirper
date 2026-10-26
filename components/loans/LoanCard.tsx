@@ -6,22 +6,35 @@ import { removeDebt, toggleDebtPaid } from '@/app/actions';
 import { Badge } from '@/components/ui/Badge';
 import { Money } from '@/components/ui/Money';
 import { SettleToggle } from '@/components/ui/SettleToggle';
-import { formatShortDate, ordinal, type IsoDate } from '@/lib/domain/calendar';
+import { formatLongDate, formatShortDate, type IsoDate } from '@/lib/domain/calendar';
+import { amountDueOn, frequencyLabel, onTimeAmount, type Installment } from '@/lib/domain/loans';
+import { formatPeso } from '@/lib/domain/money';
 import type { DebtSchedule } from '@/lib/domain/types';
 import { LoanForm } from './LoanForm';
 
 export interface LoanCardProps {
   debt: DebtSchedule;
   cycleMonthShort: string;
+  /** Every installment due through the end of the cycle month is paid. */
+  settled: boolean;
   remainingBalance: number;
-  nextInstallment: { date: IsoDate; installmentNumber: number } | null;
+  nextInstallment: Installment | null;
+  overdueCount: number;
+  today: IsoDate;
 }
 
-export function LoanCard({ debt, cycleMonthShort, remainingBalance, nextInstallment }: LoanCardProps) {
+export function LoanCard({ debt, cycleMonthShort, settled, remainingBalance, nextInstallment, overdueCount, today }: LoanCardProps) {
   const [editing, setEditing] = useState(false);
   const [isDeleting, startDelete] = useTransition();
-  const progress = Math.min(100, (debt.paidInstallments / debt.totalInstallments) * 100);
-  const finished = debt.paidInstallments >= debt.totalInstallments;
+  const paid = debt.paidInstallmentNumbers.length;
+  const progress = Math.min(100, (paid / debt.totalInstallments) * 100);
+  const finished = nextInstallment === null;
+  const payAmount = nextInstallment ? amountDueOn(debt, nextInstallment, today) : 0;
+  const undoAmount = debt.lastPayment ? (debt.lastPayment.amountPaid ?? onTimeAmount(debt)) : 0;
+  const terms = [
+    debt.rebateAmount > 0 && `${formatPeso(debt.rebateAmount)} rebate if paid on time`,
+    debt.penaltyAmount > 0 && `${formatPeso(debt.penaltyAmount)} late penalty`,
+  ].filter(Boolean);
 
   if (editing) {
     return (
@@ -40,21 +53,25 @@ export function LoanCard({ debt, cycleMonthShort, remainingBalance, nextInstallm
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <Badge tone="outflow">Due {ordinal(debt.dueDay)}</Badge>
+            <Badge tone="info">{frequencyLabel(debt)}</Badge>
+            {overdueCount > 0 && <Badge tone="outflow">{overdueCount} overdue</Badge>}
             <span className="text-sm font-medium text-slate-100">{debt.name}</span>
           </div>
-          <p className="mt-0.5 text-xs text-slate-500">{debt.lender}</p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {debt.lender && `${debt.lender} • `}Loan date {formatLongDate(debt.loanDate)}
+          </p>
         </div>
         <div className="text-right">
-          <Money value={debt.monthlyAmount} tone="outflow" className="text-lg font-semibold" />
-          <p className="text-[11px] text-slate-500">per month</p>
+          <Money value={debt.installmentAmount} tone="outflow" className="text-lg font-semibold" />
+          <p className="text-[11px] text-slate-500">per installment</p>
         </div>
       </div>
+      {terms.length > 0 && <p className="mt-1 text-[11px] text-amber-400/90">{terms.join(' · ')}</p>}
 
       <div className="mt-3">
         <div className="mb-1 flex justify-between text-[11px]">
           <span className={finished ? 'text-emerald-400' : 'text-slate-400'}>
-            {debt.paidInstallments}/{debt.totalInstallments} Paid{finished && ' — Fully paid 🎉'}
+            {paid}/{debt.totalInstallments} Paid{finished && ' — Fully paid 🎉'}
           </span>
           <span className="text-slate-500">
             Remaining: <Money value={remainingBalance} tone={remainingBalance > 0 ? 'warning' : 'inflow'} />
@@ -68,18 +85,19 @@ export function LoanCard({ debt, cycleMonthShort, remainingBalance, nextInstallm
       {debt.notes && <p className="mt-2 text-[11px] text-slate-500">{debt.notes}</p>}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="flex items-center gap-1 text-[11px] text-slate-400">
+        <span className={`flex items-center gap-1 text-[11px] ${nextInstallment && nextInstallment.date < today ? 'text-rose-400' : 'text-slate-400'}`}>
           <CalendarClock className="h-3.5 w-3.5" />
           {nextInstallment
-            ? `Next: ${formatShortDate(nextInstallment.date)} (${nextInstallment.installmentNumber}/${debt.totalInstallments})`
+            ? `Next: ${formatShortDate(nextInstallment.date)} (${nextInstallment.number}/${debt.totalInstallments})${nextInstallment.date < today ? ' — overdue' : ''}`
             : 'No installments left'}
         </span>
         <div className="flex items-center gap-1.5">
           <SettleToggle
-            settled={debt.paidThisMonth}
+            settled={settled}
             settledLabel={`Paid ${cycleMonthShort} ✓`}
-            pendingLabel={`Unpaid ${cycleMonthShort}`}
-            amount={debt.paidThisMonth ? (debt.paidInstallments > 0 ? debt.monthlyAmount : 0) : finished ? 0 : debt.monthlyAmount}
+            pendingLabel={`Pay #${nextInstallment?.number ?? ''} · ${formatPeso(payAmount)}`}
+            // Settled → undo refunds the last payment; otherwise pay the next one at today's amount.
+            amount={settled ? undoAmount : payAmount}
             direction="out"
             onToggle={(syncWallet) => toggleDebtPaid(debt.id, syncWallet)}
           />

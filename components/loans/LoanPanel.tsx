@@ -1,23 +1,21 @@
 import { HandCoins } from 'lucide-react';
 import { Money } from '@/components/ui/Money';
 import { Panel } from '@/components/ui/Panel';
-import { formatMonthShort, type YearMonth } from '@/lib/domain/calendar';
-import { remainingBalance, scheduledInstallments } from '@/lib/domain/loans';
+import { formatMonthShort, lastDayOf, type IsoDate, type YearMonth } from '@/lib/domain/calendar';
+import { activeLoanCount, clearedLoanCount } from '@/lib/domain/ledger';
+import { isSettledThrough, nextUnpaid, overdueInstallments, remainingBalance } from '@/lib/domain/loans';
 import { roundPesos } from '@/lib/domain/money';
 import type { DebtSchedule } from '@/lib/domain/types';
 import { AddLoan } from './AddLoan';
 import { LoanCard } from './LoanCard';
 
-const LOOKAHEAD_MONTHS = 600;
-
-export function LoanPanel({ debts, cycle }: { debts: DebtSchedule[]; cycle: YearMonth }) {
-  const totalRemaining = roundPesos(debts.reduce((sum, debt) => sum + remainingBalance(debt), 0));
-  const cleared = debts.filter((debt) => debt.paidThisMonth).length;
+export function LoanPanel({ debts, cycle, today }: { debts: DebtSchedule[]; cycle: YearMonth; today: IsoDate }) {
+  const totalRemaining = roundPesos(debts.reduce((sum, debt) => sum + remainingBalance(debt, today), 0));
 
   return (
     <Panel
       title="Loan Amortization & Installment Tracker"
-      subtitle={`${cleared}/${debts.length} loans cleared for ${formatMonthShort(cycle)}`}
+      subtitle={`${clearedLoanCount(debts, cycle)}/${activeLoanCount(debts, cycle)} loans clear through ${formatMonthShort(cycle)}`}
       icon={HandCoins}
       actions={
         <div className="text-right">
@@ -32,8 +30,11 @@ export function LoanPanel({ debts, cycle }: { debts: DebtSchedule[]; cycle: Year
             key={debt.id}
             debt={debt}
             cycleMonthShort={formatMonthShort(cycle)}
-            remainingBalance={remainingBalance(debt)}
-            nextInstallment={scheduledInstallments(debt, cycle, LOOKAHEAD_MONTHS)[0] ?? null}
+            settled={isSettledThrough(debt, lastDayOf(cycle))}
+            remainingBalance={remainingBalance(debt, today)}
+            nextInstallment={nextUnpaid(debt)}
+            overdueCount={overdueInstallments(debt, today).length}
+            today={today}
           />
         ))}
       </ul>
