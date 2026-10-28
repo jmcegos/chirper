@@ -1,14 +1,15 @@
 import { formatPeso, formatSignedPeso } from '@/lib/domain/money';
 
-export type Tone = 'inflow' | 'outflow' | 'warning' | 'safe' | 'muted' | 'plain';
+export type Tone = 'inflow' | 'outflow' | 'danger' | 'warning' | 'safe' | 'muted' | 'plain';
 
 export const TONE_TEXT: Record<Tone, string> = {
-  inflow: 'text-emerald-400',
-  outflow: 'text-rose-400',
-  warning: 'text-amber-400',
-  safe: 'text-sky-400',
-  muted: 'text-slate-500',
-  plain: 'text-slate-100',
+  inflow: 'text-emerald-700',
+  outflow: 'text-gray-900',
+  danger: 'text-rose-700',
+  warning: 'text-amber-700',
+  safe: 'text-gray-900',
+  muted: 'text-gray-500',
+  plain: 'text-gray-900',
 };
 
 interface MoneyProps {
@@ -20,13 +21,13 @@ interface MoneyProps {
 
 export function Money({ value, tone = 'plain', signed = false, className = '' }: MoneyProps) {
   return (
-    <span className={`font-mono tabular-nums ${TONE_TEXT[tone]} ${className}`}>
+    <span className={`tabular-nums ${TONE_TEXT[tone]} ${className}`}>
       {signed ? formatSignedPeso(value) : formatPeso(value)}
     </span>
   );
 }
 
-/** Tone for a signed cash movement. */
+/** Tone for a signed cash movement: money in is green, money out stays plain. */
 export function flowTone(amount: number): Tone {
   if (amount > 0) return 'inflow';
   if (amount < 0) return 'outflow';
@@ -35,5 +36,5 @@ export function flowTone(amount: number): Tone {
 
 /** Tone for a running balance. */
 export function balanceTone(balance: number): Tone {
-  return balance < 0 ? 'outflow' : 'safe';
+  return balance < 0 ? 'danger' : 'safe';
 }

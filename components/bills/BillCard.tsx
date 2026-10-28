@@ -1,6 +1,6 @@
 'use client';
 
-import { CalendarClock, Check, Loader2, Pencil, Trash2, X } from 'lucide-react';
+import { Check, Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { useState, useTransition } from 'react';
 import { removeBill, setBillAmount, toggleBillPaid } from '@/app/actions';
 import { Badge } from '@/components/ui/Badge';
@@ -36,15 +36,17 @@ function BilledAmountForm({ billId, next, onDone }: { billId: number; next: Bill
           onDone();
         })
       }
-      className="mt-2 flex flex-wrap items-center gap-1.5"
+      className="flex flex-wrap items-center gap-2 rounded-xl bg-gray-50 p-3"
     >
-      <span className="text-[11px] text-slate-400">Billed for {formatShortDate(next.dueDate)}:</span>
-      <input name="amount" type="number" step="0.01" min="0" required autoFocus defaultValue={next.amount} className="field-money w-32" />
-      <button type="submit" className="btn-primary px-1.5" aria-label="Save billed amount" disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+      <label htmlFor={`billed-${billId}`} className="text-[13px] text-gray-600">
+        Billed amount for {formatShortDate(next.dueDate)}
+      </label>
+      <input id={`billed-${billId}`} name="amount" type="number" step="0.01" min="0" required autoFocus defaultValue={next.amount} className="field-money w-36" />
+      <button type="submit" className="btn-icon" aria-label="Save billed amount" disabled={isPending}>
+        {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
       </button>
-      <button type="button" className="btn-neutral px-1.5" aria-label="Cancel" onClick={onDone} disabled={isPending}>
-        <X className="h-3.5 w-3.5" />
+      <button type="button" className="btn-icon" aria-label="Cancel" onClick={onDone} disabled={isPending}>
+        <X className="h-4 w-4" />
       </button>
     </form>
   );
@@ -58,7 +60,7 @@ export function BillCard({ bill, cycleMonthShort, settled, done, next, overdueCo
 
   if (editing) {
     return (
-      <li className="rounded-lg border border-sky-500/30 bg-slate-950/60 p-3">
+      <li className="py-4">
         <BillForm bill={bill} onDone={() => setEditing(false)} />
       </li>
     );
@@ -69,55 +71,57 @@ export function BillCard({ bill, cycleMonthShort, settled, done, next, overdueCo
   };
 
   return (
-    <li className={`rounded-lg border border-slate-800 bg-slate-950/40 p-3 ${isDeleting ? 'opacity-40' : ''}`}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <li className={`space-y-3 py-4 ${isDeleting ? 'opacity-40' : ''}`}>
+      <div className="flex justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Badge tone="info">{billFrequencyLabel(bill)}</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium">{bill.name}</p>
             {overdueCount > 0 && <Badge tone="outflow">{overdueCount} overdue</Badge>}
-            {done && <Badge tone="inflow">Done ✓</Badge>}
-            <span className="text-sm font-medium text-slate-100">{bill.name}</span>
+            {done && <Badge tone="inflow">Done</Badge>}
           </div>
-          {bill.notes && <p className="mt-0.5 text-xs text-slate-500">{bill.notes}</p>}
+          <p className={`text-[13px] ${nextIsOverdue ? 'text-rose-700' : 'text-gray-500'}`}>
+            {billFrequencyLabel(bill)}
+            {next ? ` · Next ${formatShortDate(next.dueDate)}${nextIsOverdue ? ' (overdue)' : ''}` : ' · Nothing left to pay'}
+          </p>
         </div>
         {next && (
-          <div className="text-right">
-            <Money value={next.amount} tone="outflow" className="text-lg font-semibold" />
-            <p className="text-[11px] text-slate-500">{next.isEstimate ? 'estimated' : 'billed'}</p>
+          <div className="shrink-0 text-right">
+            <Money value={next.amount} className="text-sm font-semibold" />
+            <p className="text-xs text-gray-500">{next.isEstimate ? 'estimated' : 'billed'}</p>
           </div>
         )}
       </div>
 
       {settingAmount && next && <BilledAmountForm billId={bill.id} next={next} onDone={() => setSettingAmount(false)} />}
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <span className={`flex items-center gap-1 text-[11px] ${nextIsOverdue ? 'text-rose-400' : 'text-slate-400'}`}>
-          <CalendarClock className="h-3.5 w-3.5" />
-          {next ? `Next: ${formatShortDate(next.dueDate)}${nextIsOverdue ? ' — overdue' : ''}` : 'Nothing left to pay'}
-          {next && !settingAmount && (
-            <button type="button" className="ml-1 text-sky-400 underline-offset-2 hover:underline" onClick={() => setSettingAmount(true)}>
-              {next.isEstimate ? 'Set billed amount' : 'Change amount'}
-            </button>
-          )}
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {next && !settingAmount ? (
+          <button type="button" className="text-[13px] font-medium text-indigo-700 hover:underline" onClick={() => setSettingAmount(true)}>
+            {next.isEstimate ? 'Set billed amount' : 'Change amount'}
+          </button>
+        ) : (
+          <span />
+        )}
         <div className="flex items-center gap-1.5">
           <SettleToggle
             settled={settled}
-            settledLabel={done ? 'Paid ✓' : `Paid ${cycleMonthShort} ✓`}
+            settledLabel={done ? 'Paid' : `Paid for ${cycleMonthShort}`}
             pendingLabel={next ? `Pay ${formatPeso(next.amount)}` : 'Pay'}
             // Settled → undo refunds the latest payment; otherwise pay the next due date.
             amount={settled ? lastPaidAmount : (next?.amount ?? 0)}
             direction="out"
             onToggle={(syncWallet) => toggleBillPaid(bill.id, syncWallet)}
           />
-          <button type="button" className="btn-neutral px-1.5" aria-label="Edit bill" onClick={() => setEditing(true)}>
-            <Pencil className="h-3.5 w-3.5" />
+          <button type="button" className="btn-icon" aria-label={`Edit ${bill.name}`} onClick={() => setEditing(true)}>
+            <Pencil className="h-4 w-4" />
           </button>
-          <button type="button" className="btn-danger px-1.5" aria-label="Delete bill" onClick={confirmDelete} disabled={isDeleting}>
-            <Trash2 className="h-3.5 w-3.5" />
+          <button type="button" className="btn-icon hover:text-rose-700" aria-label={`Delete ${bill.name}`} onClick={confirmDelete} disabled={isDeleting}>
+            <Trash2 className="h-4 w-4" />
           </button>
         </div>
       </div>
+
+      {bill.notes && <p className="text-xs text-gray-500">{bill.notes}</p>}
     </li>
   );
 }

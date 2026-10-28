@@ -6,6 +6,9 @@ import type { DebtSchedule } from './types';
 
 const DAYS_PER_MONTH = 30;
 
+/** Below this a running balance is still positive but one surprise away from a shortfall. */
+export const TIGHT_BALANCE = 1000;
+
 const pendingCash = (event: LedgerEvent) => event.amount !== 0;
 
 export function nextInflow(ledger: Ledger): LedgerEvent | null {
