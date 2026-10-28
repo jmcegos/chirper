@@ -47,10 +47,10 @@ export function BillForm({ bill, onDone }: { bill?: Bill; onDone: () => void }) 
       </label>
       <div className="col-span-2 flex justify-end gap-2 sm:col-span-6">
         <button type="button" className="btn-neutral" onClick={onDone} disabled={isPending}>
-          <X className="h-3.5 w-3.5" /> Cancel
+          <X className="h-4 w-4" /> Cancel
         </button>
         <button type="submit" className="btn-primary" disabled={isPending}>
-          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           {bill ? 'Save bill' : 'Add bill'}
         </button>
       </div>

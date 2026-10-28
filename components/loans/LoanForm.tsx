@@ -122,23 +122,23 @@ export function LoanForm({ debt, onDone }: { debt?: DebtSchedule; onDone: () => 
       </label>
 
       {past.length > 0 && (
-        <fieldset className="col-span-2 rounded-md border border-slate-800 p-2.5 sm:col-span-6">
+        <fieldset className="col-span-2 rounded-md border border-gray-200 p-3 sm:col-span-6">
           <legend className="label px-1">Past due dates — untick any you haven&apos;t paid</legend>
           <ul className="max-h-48 space-y-1 overflow-y-auto">
             {past.map((n) => (
               <li key={n}>
                 <label className="flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={!unpaid.has(n)} onChange={() => toggle(n)} className="h-3.5 w-3.5 accent-emerald-500" />
-                  <span className="w-8 text-slate-500">#{n}</span>
-                  <span className="text-slate-300">{formatLongDate(dueDateOf({ firstDueDate, frequency }, n))}</span>
+                  <input type="checkbox" checked={!unpaid.has(n)} onChange={() => toggle(n)} className="h-3.5 w-3.5 accent-gray-900" />
+                  <span className="w-8 text-gray-500">#{n}</span>
+                  <span className="text-gray-700">{formatLongDate(dueDateOf({ firstDueDate, frequency }, n))}</span>
                   {unpaid.has(n) ? (
-                    <span className="text-rose-400">
+                    <span className="text-rose-700">
                       Unpaid — overdue
                       {installmentAmount > 0 && ` · ${formatPeso(installmentAmount + penaltyAmount)}`}
                       {penaltyAmount > 0 && ` (incl. ${formatPeso(penaltyAmount)} penalty)`}
                     </span>
                   ) : (
-                    <span className="text-emerald-400">Paid</span>
+                    <span className="text-emerald-700">Paid</span>
                   )}
                 </label>
               </li>
@@ -153,10 +153,10 @@ export function LoanForm({ debt, onDone }: { debt?: DebtSchedule; onDone: () => 
       </label>
       <div className="col-span-2 flex justify-end gap-2 sm:col-span-6">
         <button type="button" className="btn-neutral" onClick={onDone} disabled={isPending}>
-          <X className="h-3.5 w-3.5" /> Cancel
+          <X className="h-4 w-4" /> Cancel
         </button>
         <button type="submit" className="btn-primary" disabled={isPending}>
-          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           {debt ? 'Save loan' : 'Add loan'}
         </button>
       </div>
