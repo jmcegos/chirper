@@ -73,6 +73,30 @@ export interface Bill {
   records: BillRecord[];
 }
 
+export interface ReceivablePayment {
+  /** Insertion order, so undo removes the highest. */
+  id: number;
+  amount: number;
+  paidOn: IsoDate;
+  /** The wallet was raised by this payment, so undo lowers it again. */
+  walletSynced: boolean;
+}
+
+/** Money someone owes the user, paid back in any amounts until nothing is left. */
+export interface Receivable {
+  id: number;
+  person: string;
+  description: string;
+  /** Total owed. */
+  amount: number;
+  lentDate: IsoDate;
+  promisedDate: IsoDate | null;
+  /** Counted on the runway as money in on the promised date. */
+  expected: boolean;
+  notes: string;
+  payments: ReceivablePayment[];
+}
+
 export interface QuickExpense {
   id: number;
   description: string;
@@ -93,5 +117,6 @@ export interface FinanceSnapshot {
   debts: DebtSchedule[];
   cards: CreditCard[];
   bills: Bill[];
+  receivables: Receivable[];
   expenses: QuickExpense[];
 }

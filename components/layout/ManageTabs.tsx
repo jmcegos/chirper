@@ -9,6 +9,7 @@ const TABS: Array<{ id: ManageTab; label: string }> = [
   { id: 'loans', label: 'Loans' },
   { id: 'income', label: 'Income' },
   { id: 'bills', label: 'Bills' },
+  { id: 'owed', label: 'Owed to me' },
   { id: 'card', label: 'Credit card' },
   { id: 'spending', label: 'Spending' },
 ];
@@ -18,7 +19,7 @@ function isManageTab(value: string | null): value is ManageTab {
 }
 
 /**
- * Loans, income, bills, card and spending in one card, one at a time.
+ * Loans, income, bills, money owed, card and spending in one card, one at a time.
  * Every panel stays mounted so a half-filled form survives a tab switch.
  */
 export function ManageTabs({ panels }: { panels: Record<ManageTab, ReactNode> }) {

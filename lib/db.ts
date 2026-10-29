@@ -4,7 +4,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { addMonths, dateOf, dayOf, formatMonthLabel, parseYearMonthKey, yearMonthKey, yearMonthOf, type IsoDate } from './domain/calendar';
 import { legacyFirstDueDate } from './domain/loans';
-import type { Bill, BillFrequency, BillRecord, CreditCard, DebtSchedule, FinanceSettings, FinanceSnapshot, IncomeRule, LoanFrequency, QuickExpense } from './domain/types';
+import type {
+  Bill,
+  BillFrequency,
+  BillRecord,
+  CreditCard,
+  DebtSchedule,
+  FinanceSettings,
+  FinanceSnapshot,
+  IncomeRule,
+  LoanFrequency,
+  QuickExpense,
+  Receivable,
+  ReceivablePayment,
+} from './domain/types';
 import { SEED_CREDIT_CARDS, SEED_DEBT_SCHEDULES, SEED_INCOME_RULES, SEED_LOAN_PAYMENTS, seedSettings } from './seed';
 
 const DB_PATH = path.join(process.cwd(), 'finance.db');
@@ -79,6 +92,23 @@ const SCHEMA = `
     paid_at       INTEGER,                     -- insertion order, so undo removes the latest payment
     PRIMARY KEY (bill_id, due_date)
   );
+  CREATE TABLE IF NOT EXISTS receivables (
+    id            INTEGER PRIMARY KEY,
+    person        TEXT    NOT NULL,
+    description   TEXT    NOT NULL DEFAULT '',
+    amount        REAL    NOT NULL,              -- total owed
+    lent_date     TEXT    NOT NULL,
+    promised_date TEXT,                          -- NULL = no date promised
+    expected      INTEGER NOT NULL DEFAULT 0,    -- 1 = count it on the runway
+    notes         TEXT    NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS receivable_payments (
+    id            INTEGER PRIMARY KEY,           -- insertion order, so undo removes the latest payment
+    receivable_id INTEGER NOT NULL REFERENCES receivables (id) ON DELETE CASCADE,
+    amount        REAL    NOT NULL,
+    paid_on       TEXT    NOT NULL,
+    wallet_synced INTEGER NOT NULL DEFAULT 0     -- 1 = the wallet was raised, so undo lowers it
+  );
   CREATE TABLE IF NOT EXISTS quick_expenses (
     id          INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
@@ -94,7 +124,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS agent_messages_thread ON agent_messages (thread_date, id);
 `;
 
-const TABLES = ['settings', 'income_rules', 'loan_payments', 'debt_schedules', 'credit_cards', 'bill_occurrences', 'bills', 'quick_expenses'] as const;
+const TABLES = ['settings', 'income_rules', 'loan_payments', 'debt_schedules', 'credit_cards', 'bill_occurrences', 'bills', 'receivable_payments', 'receivables', 'quick_expenses'] as const;
 
 /* ───────────────────────────── connection ───────────────────────────── */
 
@@ -309,6 +339,36 @@ function toBill(row: Row, records: BillRecord[]): Bill {
   };
 }
 
+function toReceivablePayment(row: Row): ReceivablePayment {
+  return { id: num(row.id), amount: num(row.amount), paidOn: str(row.paid_on), walletSynced: bool(row.wallet_synced) };
+}
+
+/** Payments per receivable id, oldest first. */
+function receivablePaymentsById(db: Database.Database, receivableId?: number): Map<number, ReceivablePayment[]> {
+  const rows = (
+    receivableId === undefined
+      ? db.prepare('SELECT * FROM receivable_payments ORDER BY id').all()
+      : db.prepare('SELECT * FROM receivable_payments WHERE receivable_id = ? ORDER BY id').all(receivableId)
+  ) as Row[];
+  const byReceivable = new Map<number, ReceivablePayment[]>();
+  for (const row of rows) byReceivable.set(num(row.receivable_id), [...(byReceivable.get(num(row.receivable_id)) ?? []), toReceivablePayment(row)]);
+  return byReceivable;
+}
+
+function toReceivable(row: Row, payments: ReceivablePayment[]): Receivable {
+  return {
+    id: num(row.id),
+    person: str(row.person),
+    description: str(row.description),
+    amount: num(row.amount),
+    lentDate: str(row.lent_date),
+    promisedDate: row.promised_date === null || row.promised_date === undefined ? null : str(row.promised_date),
+    expected: bool(row.expected),
+    notes: str(row.notes),
+    payments,
+  };
+}
+
 function toQuickExpense(row: Row): QuickExpense {
   return { id: num(row.id), description: str(row.description), amount: num(row.amount), dateLogged: str(row.date_logged) };
 }
@@ -330,12 +390,16 @@ export function getSnapshot(): FinanceSnapshot {
   const db = connection();
   const payments = paymentsByDebt(db);
   const billRecords = billRecordsById(db);
+  const receivablePayments = receivablePaymentsById(db);
   return {
     settings: readSettings(db),
     incomes: (db.prepare('SELECT * FROM income_rules ORDER BY day_of_month, id').all() as Row[]).map(toIncomeRule),
     debts: (db.prepare('SELECT * FROM debt_schedules ORDER BY first_due_date, id').all() as Row[]).map((row) => toDebtSchedule(row, payments.get(num(row.id)) ?? NO_PAYMENTS)),
     cards: (db.prepare('SELECT * FROM credit_cards ORDER BY id').all() as Row[]).map(toCreditCard),
     bills: (db.prepare('SELECT * FROM bills ORDER BY next_due_date, id').all() as Row[]).map((row) => toBill(row, billRecords.get(num(row.id)) ?? [])),
+    receivables: (db.prepare("SELECT * FROM receivables ORDER BY COALESCE(promised_date, '9999-12-31'), id").all() as Row[]).map((row) =>
+      toReceivable(row, receivablePayments.get(num(row.id)) ?? []),
+    ),
     expenses: (db.prepare('SELECT * FROM quick_expenses ORDER BY date_logged DESC, id DESC').all() as Row[]).map(toQuickExpense),
   };
 }
@@ -355,6 +419,12 @@ export function getBill(id: number): Bill | null {
   const db = connection();
   const row = db.prepare('SELECT * FROM bills WHERE id = ?').get(id) as Row | undefined;
   return row ? toBill(row, billRecordsById(db, id).get(id) ?? []) : null;
+}
+
+export function getReceivable(id: number): Receivable | null {
+  const db = connection();
+  const row = db.prepare('SELECT * FROM receivables WHERE id = ?').get(id) as Row | undefined;
+  return row ? toReceivable(row, receivablePaymentsById(db, id).get(id) ?? []) : null;
 }
 
 export function getCreditCard(id: number): CreditCard | null {
@@ -601,6 +671,79 @@ export function removeBillPayment(billId: number, dueDate: IsoDate, walletDelta:
 
 export function deleteDebt(id: number): void {
   connection().prepare('DELETE FROM debt_schedules WHERE id = ?').run(id);
+}
+
+export interface ReceivableInput {
+  person: string;
+  description: string;
+  amount: number;
+  lentDate: IsoDate;
+  promisedDate: IsoDate | null;
+  expected: boolean;
+  notes: string;
+}
+
+function receivableParams(input: ReceivableInput) {
+  return {
+    person: input.person,
+    description: input.description,
+    amount: input.amount,
+    lent_date: input.lentDate,
+    promised_date: input.promisedDate,
+    expected: input.expected ? 1 : 0,
+    notes: input.notes,
+  };
+}
+
+/** Adds a receivable; `walletDelta` is negative when the lent cash came out of the wallet. */
+export function insertReceivable(input: ReceivableInput, walletDelta: number): number {
+  const db = connection();
+  return db.transaction(() => {
+    const result = db
+      .prepare(
+        `INSERT INTO receivables (person, description, amount, lent_date, promised_date, expected, notes)
+         VALUES (@person, @description, @amount, @lent_date, @promised_date, @expected, @notes)`,
+      )
+      .run(receivableParams(input));
+    adjustWalletWith(db, walletDelta);
+    return Number(result.lastInsertRowid);
+  })();
+}
+
+export function updateReceivable(id: number, input: ReceivableInput): void {
+  connection()
+    .prepare(
+      `UPDATE receivables SET person = @person, description = @description, amount = @amount, lent_date = @lent_date,
+         promised_date = @promised_date, expected = @expected, notes = @notes
+       WHERE id = @id`,
+    )
+    .run({ ...receivableParams(input), id });
+}
+
+/** Deletes the receivable; its payments go with it (ON DELETE CASCADE). */
+export function deleteReceivable(id: number): void {
+  connection().prepare('DELETE FROM receivables WHERE id = ?').run(id);
+}
+
+export function addReceivablePayment(receivableId: number, amount: number, paidOn: IsoDate, walletSynced: boolean, walletDelta: number): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare('INSERT INTO receivable_payments (receivable_id, amount, paid_on, wallet_synced) VALUES (?, ?, ?, ?)').run(
+      receivableId,
+      amount,
+      paidOn,
+      walletSynced ? 1 : 0,
+    );
+    adjustWalletWith(db, walletDelta);
+  })();
+}
+
+export function removeReceivablePayment(paymentId: number, walletDelta: number): void {
+  const db = connection();
+  db.transaction(() => {
+    db.prepare('DELETE FROM receivable_payments WHERE id = ?').run(paymentId);
+    adjustWalletWith(db, walletDelta);
+  })();
 }
 
 export interface CardInput {

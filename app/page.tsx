@@ -4,6 +4,7 @@ import { CreditCardPanel, type CardInsight } from '@/components/card/CreditCardP
 import { QuickExpensePanel } from '@/components/expenses/QuickExpensePanel';
 import { IncomePanel } from '@/components/income/IncomePanel';
 import { ManageTabs } from '@/components/layout/ManageTabs';
+import { ReceivablePanel } from '@/components/receivables/ReceivablePanel';
 import { TopBar } from '@/components/layout/TopBar';
 import { RunwayLedger } from '@/components/ledger/RunwayLedger';
 import { LoanPanel } from '@/components/loans/LoanPanel';
@@ -28,6 +29,7 @@ const WEEKDAY = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'U
 
 const KIND_TAB: Record<LedgerEventKind, ManageTab> = {
   income: 'income',
+  receivable: 'owed',
   debt: 'loans',
   bill: 'bills',
   'card-due': 'card',
@@ -110,6 +112,7 @@ export default function DashboardPage() {
               loans: <LoanPanel debts={debts} cycle={cycle} today={today} />,
               income: <IncomePanel incomes={incomes} cycle={cycle} />,
               bills: <BillPanel bills={bills} cycle={cycle} today={today} />,
+              owed: <ReceivablePanel receivables={snapshot.receivables} today={today} />,
               card: <CreditCardPanel insights={cards.map((card) => cardInsight(card, ledger))} />,
               spending: (
                 <QuickExpensePanel expenses={expenses} dailySafeSpend={safeSpend.dailySafeSpend} cycleKey={yearMonthKey(cycle)} paydayLabel={paydayLabel} />
