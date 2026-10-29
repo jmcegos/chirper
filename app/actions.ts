@@ -110,6 +110,49 @@ export async function setBillAmount(billId: number, dueDate: string, form: FormD
   refresh();
 }
 
+/* ──────────────────────────── receivables ──────────────────────────── */
+
+/** Runs a command and returns its validation message instead of throwing, so the form can show it inline. */
+function inlineError(run: () => void): string | null {
+  try {
+    run();
+  } catch (error) {
+    if (error instanceof commands.CommandError) return error.message;
+    throw error;
+  }
+  refresh();
+  return null;
+}
+
+export async function saveReceivable(form: FormData, deductFromWallet: boolean): Promise<string | null> {
+  const id = integer(form, 'id');
+  const promisedDate = text(form, 'promisedDate');
+  const input = {
+    person: text(form, 'person'),
+    description: text(form, 'description'),
+    amount: pesos(form, 'amount'),
+    lentDate: text(form, 'lentDate'),
+    promisedDate: promisedDate === '' ? null : promisedDate,
+    expected: form.get('expected') === 'on',
+    notes: text(form, 'notes'),
+  };
+  return inlineError(() => (id > 0 ? commands.updateReceivable(id, input) : commands.addReceivable(input, deductFromWallet)));
+}
+
+export async function removeReceivable(receivableId: number): Promise<void> {
+  commands.deleteReceivable(receivableId);
+  refresh();
+}
+
+export async function recordReceivablePayment(receivableId: number, syncWallet: boolean, form: FormData): Promise<string | null> {
+  return inlineError(() => commands.recordReceivablePayment(receivableId, pesos(form, 'amount'), syncWallet, text(form, 'paidOn')));
+}
+
+export async function undoReceivablePayment(receivableId: number): Promise<void> {
+  commands.undoLastReceivablePayment(receivableId);
+  refresh();
+}
+
 /* ──────────────────────────── credit cards ─────────────────────────── */
 
 export async function saveCard(form: FormData): Promise<void> {

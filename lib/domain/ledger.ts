@@ -18,12 +18,13 @@ import { upcomingBills } from './creditCard';
 import { amountDueOn, installments, isSettledThrough, remainingInstallments, type Installment } from './loans';
 import { formatPeso, toCentavos, toPesos } from './money';
 import { absenceDeduction, netPay } from './payroll';
-import type { Bill, CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule } from './types';
+import { isPaidOff, paidTotal, remaining } from './receivables';
+import type { Bill, CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule, Receivable } from './types';
 
 /** Current cycle month + the next two (the second one is the expandable view). */
 export const MONTHS_AHEAD = 2;
 
-export type LedgerEventKind = 'income' | 'debt' | 'bill' | 'card-due' | 'card-statement';
+export type LedgerEventKind = 'income' | 'receivable' | 'debt' | 'bill' | 'card-due' | 'card-statement';
 
 export interface LedgerEvent {
   id: string;
@@ -68,7 +69,7 @@ export interface Ledger {
 type DraftEvent = Omit<LedgerEvent, 'runningBalance' | 'date' | 'overdue'>;
 
 /** Same-day ordering: money lands, then info, then money leaves. */
-const KIND_ORDER: Record<LedgerEventKind, number> = { income: 0, 'card-statement': 1, debt: 2, bill: 2, 'card-due': 2 };
+const KIND_ORDER: Record<LedgerEventKind, number> = { income: 0, receivable: 0, 'card-statement': 1, debt: 2, bill: 2, 'card-due': 2 };
 
 function incomeAbsencesFor(rule: IncomeRule, monthOffset: number): number {
   if (monthOffset === 0) return rule.currentAbsences;
@@ -169,6 +170,40 @@ function billDrafts(bill: Bill, cycle: YearMonth, end: IsoDate, completed: Compl
   return drafts;
 }
 
+/**
+ * An expected receivable with a promised date is money in for what is still
+ * owed; one promised before the ledger start is rolled onto it as overdue.
+ * Payments received in the cycle month are reported as completed.
+ */
+function receivableDrafts(receivable: Receivable, cycle: YearMonth, end: IsoDate, completed: CompletedItem[]): DraftEvent[] {
+  let received = 0;
+  for (const payment of receivable.payments) {
+    received += toCentavos(payment.amount);
+    if (!isSameYearMonth(yearMonthOf(payment.paidOn), cycle)) continue;
+    completed.push({
+      id: `receivable-${receivable.id}-pay-${payment.id}`,
+      date: payment.paidOn,
+      title: receivable.person,
+      amount: payment.amount,
+      note: received >= toCentavos(receivable.amount) ? 'Received ✓' : 'Partial ✓',
+    });
+  }
+  if (!receivable.expected || receivable.promisedDate === null || isPaidOff(receivable) || receivable.promisedDate > end) return [];
+  const paid = paidTotal(receivable);
+  const progress = paid > 0 ? `${formatPeso(paid)} of ${formatPeso(receivable.amount)} received` : '';
+  return [
+    {
+      id: `receivable-${receivable.id}`,
+      scheduledDate: receivable.promisedDate,
+      kind: 'receivable',
+      title: `${receivable.person} pays back`,
+      detail: [receivable.description, progress].filter(Boolean).join(' • '),
+      amount: remaining(receivable),
+      isPayroll: false,
+    },
+  ];
+}
+
 function cardDrafts(card: CreditCard, start: IsoDate, end: IsoDate, completed: CompletedItem[]): DraftEvent[] {
   if (card.paidThisMonth && card.lastSettledDue) {
     completed.push({
@@ -237,6 +272,7 @@ export function buildLedger(snapshot: FinanceSnapshot, today: IsoDate): Ledger {
 
   const drafts: DraftEvent[] = [
     ...snapshot.incomes.flatMap((rule) => incomeDrafts(rule, cycle, completed)),
+    ...snapshot.receivables.flatMap((receivable) => receivableDrafts(receivable, cycle, endDate, completed)),
     ...snapshot.debts.flatMap((debt) => debtDrafts(debt, cycle, startDate, endDate, completed)),
     ...snapshot.cards.flatMap((card) => cardDrafts(card, startDate, endDate, completed)),
     ...snapshot.bills.flatMap((bill) => billDrafts(bill, cycle, endDate, completed)),

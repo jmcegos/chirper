@@ -348,6 +348,100 @@ const TOOLS: AgentTool[] = [
     (input) => commands.setBillPaid(input.number('bill_id'), input.boolean('paid'), input.boolean('sync_wallet')),
   ),
   tool(
+    'add_receivable',
+    'Record money someone owes the user (the user lent it to them). If expected is true it shows as money in on the promised date in the runway.',
+    schema(
+      {
+        person: { type: 'string', description: 'Who owes the money' },
+        amount: pesos('Total amount owed'),
+        lent_date: isoDate('When the user lent the money'),
+        description: { type: 'string', description: 'What the money was for' },
+        promised_date: isoDate('When they promised to pay back. Omit if none'),
+        expected: { type: 'boolean', description: 'true = the user is counting on it; needs promised_date. Default false' },
+        notes: { type: 'string' },
+        deduct_from_wallet: { type: 'boolean', description: 'true = the lent cash just came out of the wallet, so lower it by the amount' },
+      },
+      ['person', 'amount', 'lent_date', 'deduct_from_wallet'],
+    ),
+    (input) => {
+      const fields = input.present({ description: 'string', promised_date: 'string', expected: 'boolean', notes: 'string' });
+      return commands.addReceivable(
+        {
+          person: input.string('person'),
+          amount: input.number('amount'),
+          lentDate: input.string('lent_date'),
+          description: (fields.description as string | undefined) ?? '',
+          promisedDate: (fields.promised_date as string | undefined) ?? null,
+          expected: (fields.expected as boolean | undefined) ?? false,
+          notes: (fields.notes as string | undefined) ?? '',
+        },
+        input.boolean('deduct_from_wallet'),
+      );
+    },
+  ),
+  tool(
+    'update_receivable',
+    'Change fields of money owed to the user. Send only the fields that change; send promised_date "" to clear it.',
+    schema(
+      {
+        receivable_id: id('Receivable id'),
+        person: { type: 'string' },
+        amount: pesos('Total amount owed'),
+        lent_date: isoDate('When the money was lent'),
+        description: { type: 'string' },
+        promised_date: isoDate('When they promised to pay back, or "" for none'),
+        expected: { type: 'boolean' },
+        notes: { type: 'string' },
+      },
+      ['receivable_id'],
+    ),
+    (input) => {
+      const fields = input.present({ person: 'string', amount: 'number', lent_date: 'string', description: 'string', promised_date: 'string', expected: 'boolean', notes: 'string' });
+      const promised = fields.promised_date as string | undefined;
+      return commands.updateReceivable(input.number('receivable_id'), {
+        person: fields.person as string | undefined,
+        amount: fields.amount as number | undefined,
+        lentDate: fields.lent_date as string | undefined,
+        description: fields.description as string | undefined,
+        promisedDate: promised === undefined ? undefined : promised.trim() === '' ? null : promised,
+        expected: fields.expected as boolean | undefined,
+        notes: fields.notes as string | undefined,
+      });
+    },
+  ),
+  tool(
+    'delete_receivable',
+    'Permanently delete money owed to the user, with its payment history. Only after the user explicitly confirms.',
+    schema({ receivable_id: id('Receivable id') }),
+    (input) => commands.deleteReceivable(input.number('receivable_id')),
+  ),
+  tool(
+    'record_receivable_payment',
+    'Record a payment (partial or full) from someone who owes the user. Cannot exceed what is still owed.',
+    schema(
+      {
+        receivable_id: id('Receivable id'),
+        amount: pesos('Amount received'),
+        paid_on: isoDate('When it was received. Default today'),
+        sync_wallet: syncWallet,
+      },
+      ['receivable_id', 'amount', 'sync_wallet'],
+    ),
+    (input) =>
+      commands.recordReceivablePayment(
+        input.number('receivable_id'),
+        input.number('amount'),
+        input.boolean('sync_wallet'),
+        input.present({ paid_on: 'string' }).paid_on as string | undefined,
+      ),
+  ),
+  tool(
+    'undo_receivable_payment',
+    'Remove the most recent payment on a receivable. The wallet moves back only if that payment had moved it.',
+    schema({ receivable_id: id('Receivable id') }),
+    (input) => commands.undoLastReceivablePayment(input.number('receivable_id')),
+  ),
+  tool(
     'update_credit_card',
     'Update credit card figures. Send only the fields that change.',
     schema(

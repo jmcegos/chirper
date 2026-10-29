@@ -1,6 +1,6 @@
 /** Window events that let one part of the dashboard steer another without shared state. */
 
-export type ManageTab = 'loans' | 'income' | 'bills' | 'card' | 'spending';
+export type ManageTab = 'loans' | 'income' | 'bills' | 'owed' | 'card' | 'spending';
 
 const OPEN_TAB = 'fin:open-tab';
 const OPEN_AGENT = 'fin:open-agent';

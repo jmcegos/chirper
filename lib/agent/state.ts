@@ -8,6 +8,7 @@ import { allEvents, buildLedger } from '@/lib/domain/ledger';
 import { amountDueOn, nextUnpaid, overdueInstallments, paidCount, payoffOf, remainingBalance, type Installment } from '@/lib/domain/loans';
 import type { DebtSchedule } from '@/lib/domain/types';
 import { netPay } from '@/lib/domain/payroll';
+import { outstandingTotal, paidTotal, receivableStatus, remaining } from '@/lib/domain/receivables';
 
 const RECENT_EXPENSES = 15;
 
@@ -71,6 +72,24 @@ export function financialState(today: IsoDate) {
       done: isBillDone(bill),
       notes: bill.notes,
     })),
+    receivables: snapshot.receivables.map((receivable) => ({
+      id: receivable.id,
+      person: receivable.person,
+      description: receivable.description,
+      amount: receivable.amount,
+      paid: paidTotal(receivable),
+      remaining: remaining(receivable),
+      lentDate: receivable.lentDate,
+      promisedDate: receivable.promisedDate,
+      expected: receivable.expected,
+      status: receivableStatus(receivable, today),
+      payments: receivable.payments.map(({ amount, paidOn }) => ({ amount, paidOn })),
+      notes: receivable.notes,
+    })),
+    receivableTotals: {
+      outstanding: outstandingTotal(snapshot.receivables),
+      expected: outstandingTotal(snapshot.receivables, { expectedOnly: true }),
+    },
     creditCards: cards.map((card) => ({
       id: card.id,
       name: card.name,

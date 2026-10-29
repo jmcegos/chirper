@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, CreditCard, FileText, Landmark, Receipt } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, CreditCard, FileText, HandCoins, Landmark, Receipt } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { balanceTone, flowTone, Money } from '@/components/ui/Money';
 import { dayOf, formatMonthShort, formatShortDate, yearMonthOf } from '@/lib/domain/calendar';
@@ -8,6 +8,7 @@ import { formatPeso } from '@/lib/domain/money';
 
 const KIND_ICON: Record<LedgerEventKind, typeof Landmark> = {
   income: ArrowDownLeft,
+  receivable: HandCoins,
   debt: Landmark,
   bill: Receipt,
   'card-due': CreditCard,
@@ -16,6 +17,7 @@ const KIND_ICON: Record<LedgerEventKind, typeof Landmark> = {
 
 const KIND_STYLE: Record<LedgerEventKind, string> = {
   income: 'bg-emerald-50 text-emerald-700',
+  receivable: 'bg-emerald-50 text-emerald-700',
   debt: 'bg-gray-100 text-gray-700',
   bill: 'bg-gray-100 text-gray-700',
   'card-due': 'bg-gray-100 text-gray-700',
@@ -37,7 +39,7 @@ interface LedgerRowProps {
 }
 
 export function LedgerRow({ event, balance, simulated }: LedgerRowProps) {
-  const Icon = event.amount > 0 ? ArrowDownLeft : event.kind === 'income' ? ArrowUpRight : KIND_ICON[event.kind];
+  const Icon = event.kind === 'receivable' ? HandCoins : event.amount > 0 ? ArrowDownLeft : event.kind === 'income' ? ArrowUpRight : KIND_ICON[event.kind];
   const shortfall = balance < 0;
   const tight = !shortfall && balance < TIGHT_BALANCE;
 

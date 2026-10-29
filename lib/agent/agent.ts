@@ -20,6 +20,7 @@ What the app tracks (Philippine pesos, Asia/Manila time):
 - Installment loans with a loan date, due dates (monthly or every 15 days) and which installments are paid; unpaid past ones are overdue.
 - Credit cards: the statement day moves no cash; cash leaves on the due day.
 - Bills and planned expenses (monthly, every 15 days, yearly or one-time) with an estimated amount; record the actual amount with set_bill_amount when a bill arrives.
+- Money owed *to* the user is a receivable, not a loan. They can be paid back in parts: record each payment with record_receivable_payment. Only receivables marked expected (with a promised date) count as money in on the runway.
 - Pocket expenses that come straight out of the wallet.
 - A forward running-balance ledger that shows the balance after every future event and flags any shortfall.
 "This month" means the app's current cycle month, shown in the state.

@@ -195,6 +195,84 @@ describe('bills and planned expenses', () => {
   });
 });
 
+describe('receivables', () => {
+  type ReceivableState = { id: number; person: string; paid: number; remaining: number; status: string; payments: unknown[] };
+  const state = () => JSON.parse(run('get_financial_state').content);
+  const receivableOf = (person: string): ReceivableState => state().receivables.find((r: ReceivableState) => r.person === person);
+  const add = (fields: Record<string, unknown>) => run('add_receivable', { lent_date: '2026-10-01', deduct_from_wallet: false, ...fields });
+
+  it('adds a receivable and deducts the wallet only when asked', () => {
+    const before = wallet();
+    expect(add({ person: 'Ana', amount: 3000, promised_date: '2026-10-30', expected: true })).toEqual({
+      content: 'Added #1: Ana owes ₱3,000.00, promised Oct 30, 2026 (wallet unchanged)',
+      isError: false,
+    });
+    expect(wallet()).toBeCloseTo(before, 2);
+    expect(add({ person: 'Ben', amount: 500, deduct_from_wallet: true }).content).toContain('wallet -₱500.00');
+    expect(wallet()).toBeCloseTo(before - 500, 2);
+    expect(state().runway.upcoming).toContainEqual(expect.objectContaining({ date: '2026-10-30', title: 'Ana pays back', amount: 3000 }));
+  });
+
+  it('records partial payments until paid off', () => {
+    const before = wallet();
+    expect(run('record_receivable_payment', { receivable_id: 1, amount: 1000, sync_wallet: true }).content).toBe(
+      'Ana paid ₱1,000.00 — ₱2,000.00 left (wallet +₱1,000.00)',
+    );
+    expect(wallet()).toBeCloseTo(before + 1000, 2);
+    run('record_receivable_payment', { receivable_id: 1, amount: 500, sync_wallet: false, paid_on: '2026-10-15' });
+    expect(receivableOf('Ana')).toMatchObject({ paid: 1500, remaining: 1500, status: 'partial' });
+    expect(state().runway.upcoming).toContainEqual(expect.objectContaining({ title: 'Ana pays back', amount: 1500 }));
+    expect(run('record_receivable_payment', { receivable_id: 1, amount: 1500, sync_wallet: false }).content).toContain('paid off');
+    expect(receivableOf('Ana')).toMatchObject({ remaining: 0, status: 'paid' });
+    expect(state().runway.upcoming.some((event: { title: string }) => event.title === 'Ana pays back')).toBe(false);
+  });
+
+  it('rejects a payment above the remaining amount', () => {
+    const before = wallet();
+    expect(run('record_receivable_payment', { receivable_id: 2, amount: 600, sync_wallet: true })).toEqual({ content: 'Ben only owes ₱500.00.', isError: true });
+    expect(run('record_receivable_payment', { receivable_id: 1, amount: 1, sync_wallet: true }).content).toBe('Ana has already paid in full.');
+    expect(wallet()).toBeCloseTo(before, 2);
+    expect(receivableOf('Ben').payments).toHaveLength(0);
+  });
+
+  it('rejects zero, future-dated and pre-lent-date payments', () => {
+    expect(run('record_receivable_payment', { receivable_id: 2, amount: 0, sync_wallet: false }).isError).toBe(true);
+    expect(run('record_receivable_payment', { receivable_id: 2, amount: 100, sync_wallet: false, paid_on: '2026-10-18' }).content).toBe(
+      "Payment date can't be in the future.",
+    );
+    expect(run('record_receivable_payment', { receivable_id: 2, amount: 100, sync_wallet: false, paid_on: '2026-09-30' }).content).toBe(
+      "Payment date can't be before the lent date.",
+    );
+  });
+
+  it('undo reverses the wallet only for a synced payment', () => {
+    const before = wallet();
+    run('record_receivable_payment', { receivable_id: 2, amount: 100, sync_wallet: false });
+    run('record_receivable_payment', { receivable_id: 2, amount: 200, sync_wallet: true });
+    expect(wallet()).toBeCloseTo(before + 200, 2);
+    expect(run('undo_receivable_payment', { receivable_id: 2 }).content).toContain('wallet -₱200.00');
+    expect(wallet()).toBeCloseTo(before, 2);
+    expect(run('undo_receivable_payment', { receivable_id: 2 }).content).toContain('wallet unchanged');
+    expect(wallet()).toBeCloseTo(before, 2);
+    expect(run('undo_receivable_payment', { receivable_id: 2 }).content).toBe('Ben has no payments to undo');
+  });
+
+  it('validates the promise and the amount', () => {
+    expect(add({ person: 'Cy', amount: 100, expected: true }).content).toBe('A receivable you count on needs a promised date.');
+    expect(add({ person: 'Cy', amount: 100, promised_date: '2026-09-01' }).content).toBe("Promised date can't be before the lent date.");
+    run('record_receivable_payment', { receivable_id: 2, amount: 300, sync_wallet: false });
+    expect(run('update_receivable', { receivable_id: 2, amount: 250 }).content).toBe("Amount owed can't be less than the ₱300.00 already paid.");
+    expect(run('update_receivable', { receivable_id: 2, amount: 400, notes: 'Lowered' }).isError).toBe(false);
+    expect(receivableOf('Ben')).toMatchObject({ remaining: 100 });
+  });
+
+  it('deletes a receivable with its payments', () => {
+    expect(run('delete_receivable', { receivable_id: 2 })).toEqual({ content: "Deleted Ben's receivable of ₱400.00", isError: false });
+    expect(receivableOf('Ben')).toBeUndefined();
+    expect(state().receivableTotals).toEqual({ outstanding: 0, expected: 0 });
+  });
+});
+
 describe('transcript view', () => {
   it('folds the raw API thread into chat bubbles with change chips', async () => {
     const { todaysTranscript } = await import('./transcript');

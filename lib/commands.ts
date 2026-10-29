@@ -4,8 +4,9 @@ import { BILL_FREQUENCIES, billFrequencyLabel, isBillDone, isBillSettledThrough,
 import { currentBill } from './domain/creditCard';
 import { LOAN_FREQUENCIES, amountDueOn, frequencyLabel, isSettledThrough, nextUnpaid, onTimeAmount, pastDueNumbers } from './domain/loans';
 import type { DebtSchedule } from './domain/types';
-import { formatPeso, roundPesos } from './domain/money';
+import { formatPeso, roundPesos, toCentavos, toPesos } from './domain/money';
 import { netPay, normalizeAbsences } from './domain/payroll';
+import { lastPayment, paidTotal, remaining } from './domain/receivables';
 import * as db from './db';
 
 /**
@@ -326,6 +327,77 @@ export function toggleBillPaid(billId: number, syncWallet: boolean): string {
   const bill = found(db.getBill(billId), 'Bill');
   const settled = isBillDone(bill) || isBillSettledThrough(bill, lastDayOf(db.getSnapshot().settings.cycleMonth));
   return setBillPaid(billId, !settled, syncWallet);
+}
+
+/* ──────────────────────────── receivables ──────────────────────────── */
+
+function validReceivable(input: db.ReceivableInput): db.ReceivableInput {
+  const lentDate = isoDate(input.lentDate, 'Lent date');
+  const promisedDate = input.promisedDate === null || input.promisedDate.trim() === '' ? null : isoDate(input.promisedDate, 'Promised date');
+  if (promisedDate !== null && promisedDate < lentDate) throw new CommandError("Promised date can't be before the lent date.");
+  if (input.expected && promisedDate === null) throw new CommandError('A receivable you count on needs a promised date.');
+  return {
+    person: nonEmpty(input.person, 'Person'),
+    description: input.description.trim(),
+    amount: pesos(input.amount, 'Amount owed', { allowZero: false }),
+    lentDate,
+    promisedDate,
+    expected: input.expected,
+    notes: input.notes.trim(),
+  };
+}
+
+/** `deductFromWallet`: the lent cash just left the wallet. */
+export function addReceivable(input: db.ReceivableInput, deductFromWallet: boolean): string {
+  const receivable = validReceivable(input);
+  const delta = deductFromWallet ? -receivable.amount : 0;
+  const id = db.insertReceivable(receivable, delta);
+  const promise = receivable.promisedDate ? `, promised ${formatLongDate(receivable.promisedDate)}` : '';
+  return `Added #${id}: ${receivable.person} owes ${formatPeso(receivable.amount)}${promise} (${walletNote(delta)})`;
+}
+
+export function updateReceivable(receivableId: number, changes: Partial<db.ReceivableInput>): string {
+  const receivable = found(db.getReceivable(receivableId), 'Receivable');
+  const updated = validReceivable({ ...receivable, ...defined(changes) });
+  const paid = paidTotal(receivable);
+  if (toCentavos(updated.amount) < toCentavos(paid)) {
+    throw new CommandError(`Amount owed can't be less than the ${formatPeso(paid)} already paid.`);
+  }
+  db.updateReceivable(receivableId, updated);
+  return `Updated ${updated.person}'s receivable`;
+}
+
+export function deleteReceivable(receivableId: number): string {
+  const receivable = found(db.getReceivable(receivableId), 'Receivable');
+  db.deleteReceivable(receivableId);
+  return `Deleted ${receivable.person}'s receivable of ${formatPeso(receivable.amount)}`;
+}
+
+/** Records part (or all) of what is owed; never more than what is left. */
+export function recordReceivablePayment(receivableId: number, amount: number, syncWallet: boolean, paidOn?: IsoDate): string {
+  const receivable = found(db.getReceivable(receivableId), 'Receivable');
+  const paid = pesos(amount, 'Payment', { allowZero: false });
+  const left = remaining(receivable);
+  if (left === 0) throw new CommandError(`${receivable.person} has already paid in full.`);
+  if (toCentavos(paid) > toCentavos(left)) throw new CommandError(`${receivable.person} only owes ${formatPeso(left)}.`);
+  const date = paidOn === undefined || paidOn.trim() === '' ? todayLocal() : isoDate(paidOn, 'Payment date');
+  if (date > todayLocal()) throw new CommandError("Payment date can't be in the future.");
+  if (date < receivable.lentDate) throw new CommandError("Payment date can't be before the lent date.");
+  const delta = syncWallet ? paid : 0;
+  db.addReceivablePayment(receivableId, paid, date, syncWallet, delta);
+  const after = toCentavos(left) - toCentavos(paid);
+  const status = after === 0 ? 'paid off' : `${formatPeso(toPesos(after))} left`;
+  return `${receivable.person} paid ${formatPeso(paid)} — ${status} (${walletNote(delta)})`;
+}
+
+/** Removes the latest payment; the wallet moves back only if that payment moved it. */
+export function undoLastReceivablePayment(receivableId: number): string {
+  const receivable = found(db.getReceivable(receivableId), 'Receivable');
+  const last = lastPayment(receivable);
+  if (!last) return `${receivable.person} has no payments to undo`;
+  const delta = last.walletSynced ? -last.amount : 0;
+  db.removeReceivablePayment(last.id, delta);
+  return `Removed ${receivable.person}'s ${formatPeso(last.amount)} payment of ${formatLongDate(last.paidOn)} (${walletNote(delta)})`;
 }
 
 /* ──────────────────────────── credit cards ─────────────────────────── */

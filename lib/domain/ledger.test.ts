@@ -5,7 +5,7 @@ import { debtServiceByMonth, liberationMilestones, maxSafeLivingSpend, nextInflo
 import { allEvents, buildLedger } from './ledger';
 import { remainingBalance } from './loans';
 import { netPay } from './payroll';
-import type { CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule, LoanFrequency } from './types';
+import type { CreditCard, DebtSchedule, FinanceSnapshot, IncomeRule, LoanFrequency, Receivable } from './types';
 import { SEED_CREDIT_CARDS, SEED_DEBT_SCHEDULES, SEED_INCOME_RULES, SEED_LOAN_PAYMENTS, seedSettings } from '../fixtures/sampleData';
 
 const TODAY = '2026-10-17';
@@ -63,6 +63,7 @@ function seedSnapshot(): FinanceSnapshot {
     debts,
     cards,
     bills: [],
+    receivables: [],
     expenses: [],
   };
 }
@@ -179,6 +180,55 @@ describe('bills', () => {
     const paidInOctober = { ...meralco, nextDueDate: '2026-10-01', records: [{ dueDate: '2026-10-01', actualAmount: null, paidAmount: 2350, paidAt: 1 }] };
     const ledger = buildLedger({ ...seedSnapshot(), bills: [paidInOctober] }, TODAY);
     expect(ledger.completed.find((item) => item.id.startsWith('bill'))).toMatchObject({ title: 'Meralco', amount: -2350, note: 'Paid ✓' });
+  });
+});
+
+describe('receivables', () => {
+  const ana: Receivable = {
+    id: 7, person: 'Ana', description: 'Phone repair', amount: 2000, lentDate: '2026-10-01', promisedDate: '2026-10-22', expected: true, notes: '',
+    payments: [],
+  };
+  const pay = (id: number, amount: number, paidOn = '2026-10-12') => ({ id, amount, paidOn, walletSynced: true });
+  const receivableEvents = (receivables: Receivable[]) =>
+    allEvents(buildLedger({ ...seedSnapshot(), receivables }, TODAY)).filter((event) => event.kind === 'receivable');
+
+  it('adds an expected receivable as money in on its promised date', () => {
+    expect(receivableEvents([ana])).toEqual([
+      expect.objectContaining({ id: 'receivable-7', date: '2026-10-22', amount: 2000, title: 'Ana pays back', detail: 'Phone repair', overdue: false }),
+    ]);
+  });
+
+  it('shows only the remaining amount as money in', () => {
+    const [event] = receivableEvents([{ ...ana, payments: [pay(1, 500)] }]);
+    expect(event.amount).toBe(1500);
+    expect(event.detail).toBe('Phone repair • ₱500.00 of ₱2,000.00 received');
+  });
+
+  it('ignores receivables that are not expected', () => {
+    expect(receivableEvents([{ ...ana, expected: false }, { ...ana, id: 8, promisedDate: null }])).toEqual([]);
+  });
+
+  it('rolls a past promised date onto the start as overdue', () => {
+    expect(receivableEvents([{ ...ana, promisedDate: '2026-10-10' }])[0]).toMatchObject({ date: TODAY, scheduledDate: '2026-10-10', overdue: true });
+  });
+
+  it('drops paid-off receivables and those promised past the ledger end', () => {
+    expect(receivableEvents([{ ...ana, payments: [pay(1, 2000)] }, { ...ana, id: 8, promisedDate: '2027-03-01' }])).toEqual([]);
+  });
+
+  it('lists cycle-month payments as completed', () => {
+    const ledger = buildLedger({ ...seedSnapshot(), receivables: [{ ...ana, payments: [pay(1, 500, '2026-09-28'), pay(2, 700), pay(3, 800)] }] }, TODAY);
+    expect(ledger.completed.filter((item) => item.id.startsWith('receivable')).map((item) => [item.amount, item.note])).toEqual([
+      [700, 'Partial ✓'],
+      [800, 'Received ✓'],
+    ]);
+  });
+
+  it('orders a receivable after income on the same day', () => {
+    const sameDay = allEvents(buildLedger({ ...seedSnapshot(), receivables: [{ ...ana, promisedDate: '2026-10-25' }] }, TODAY)).filter(
+      (event) => event.date === '2026-10-25',
+    );
+    expect(sameDay.map((event) => event.kind).slice(0, 2)).toEqual(['income', 'receivable']);
   });
 });
 
